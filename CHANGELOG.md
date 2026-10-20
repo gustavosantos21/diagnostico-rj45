@@ -1,5 +1,15 @@
 # Histórico de versões
 
+## 1.1.0 — 2026-10-20
+
+- Consulta direta por .NET/WMI e APIs IP Helper, sem iniciar PowerShell ou ping.
+- MAC local, máscara, IPv6, DHCP, servidor DHCP e datas de concessão no relatório.
+- Teste ICMP com origem explícita, rota restrita ao adaptador e resumo de latência.
+- Link de 100 Mb/s apresentado como característica observada, sem presumir defeito.
+- Manifesto `asInvoker`: sem solicitação automática de administrador.
+- Tratamento de erro na exportação e teste nativo de rota/ICMP em loopback.
+- Nenhuma alteração automática de políticas de segurança pelo aplicativo. A regra de reputação do Defender pode continuar bloqueando o EXE sem assinatura.
+
 ## Documentação — 2026-10-20
 
 - Código original e executáveis disponibilizados sob a Unlicense, incluindo as versões 1.0.0 e 1.0.1.
