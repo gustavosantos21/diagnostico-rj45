@@ -1,0 +1,10 @@
+# Compilados e resultados locais; as releases são geradas pelo GitHub Actions.
+*.exe
+*.pdb
+preview.png
+verificacao-local.txt
+erro-verificacao.txt
+identificacao-build.json
+bin/
+obj/
+.vs/

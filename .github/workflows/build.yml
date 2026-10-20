@@ -1,0 +1,50 @@
+name: Compilar e verificar
+on:
+  push:
+    branches: [main, 'feature/**', 'fix/**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compilar
+        shell: powershell
+        run: .\compilar.ps1
+      - name: Verificar interpretações sem hardware
+        shell: powershell
+        run: |
+          $p = Start-Process .\DiagnosticoRJ45.exe -ArgumentList '--unit-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Falha nas verificações: $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiagnosticoRJ45-1.0
+          path: DiagnosticoRJ45.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DiagnosticoRJ45-1.0
+          path: dist
+      - name: Publicar versão
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$env:RELEASE_TAG" .\dist\DiagnosticoRJ45.exe --verify-tag --title "Diagnóstico RJ45 $env:RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          if ($LASTEXITCODE -ne 0) { throw 'Falha ao publicar a release' }
