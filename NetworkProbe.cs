@@ -9,61 +9,78 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Reflection;
+using System.Management;
+using System.Net.NetworkInformation;
+using System.Runtime.InteropServices;
+using System.ComponentModel;
 
 [assembly: AssemblyTitle("Diagnóstico RJ45")]
 [assembly: AssemblyDescription("Diagnóstico de portas Ethernet para Windows")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
-[assembly: AssemblyInformationalVersion("1.0.1")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyInformationalVersion("1.1.0")]
 
 public class Adapter {
     public string Name, Description, Id, Status, Driver, DriverDate, IPv4, Gateway, Dns, Model, ConfigNote;
+    public string Mac, Mask, Dhcp, DhcpServer, LeaseStart, LeaseEnd, DnsSuffix, IPv6;
     public long Speed, Received, Sent, RxErrors, TxErrors, RxDiscarded, TxDiscarded;
     public int Index;
     public override string ToString() { return Name + " — " + Description; }
 }
 public class Probe {
-    public static JavaScriptSerializer Json = new JavaScriptSerializer();
-    public static string Run(string file, string args, int timeout, bool acceptExitCode = false) {
-        using (var p = new Process()) {
-            p.StartInfo = new ProcessStartInfo(file, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8 };
-            p.Start();
-            var output = p.StandardOutput.ReadToEndAsync();
-            var error = p.StandardError.ReadToEndAsync();
-            if (!p.WaitForExit(timeout)) { try { p.Kill(); } catch {} throw new Exception("A consulta excedeu o tempo limite."); }
-            Task.WaitAll(output, error);
-            if (p.ExitCode != 0 && !acceptExitCode) throw new Exception("A consulta não pôde ser concluída: " + error.Result.Trim());
-            return output.Result.Trim();
+    static List<Dictionary<string, object>> Query(string query) {
+        var list = new List<Dictionary<string, object>>();
+        using(var search = new ManagementObjectSearcher(new ManagementScope(@"root\cimv2"), new ObjectQuery(query), new EnumerationOptions { Timeout=TimeSpan.FromSeconds(8) }))
+        using(var rows = search.Get()) foreach(ManagementObject row in rows) using(row) {
+            var item = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            foreach(PropertyData property in row.Properties) item[property.Name]=property.Value;
+            list.Add(item);
         }
+        return list;
     }
-    public static string PS(string script) {
-        return Run(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe"), "-NoLogo -NoProfile -NonInteractive -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); " + script)), 25000);
-    }
+    static string Field(Dictionary<string,object> row, string name) { return row!=null && row.ContainsKey(name) ? Convert.ToString(row[name]) : ""; }
+    static string Lease(Dictionary<string,object> row, string name) { string value=Field(row,name); if(value.Length==0) return ""; try { return ManagementDateTimeConverter.ToDateTime(value).ToString("yyyy-MM-dd HH:mm:ss"); } catch { return "não disponível"; } }
     public static Adapter[] Read() {
-        string script = @"
-$model=(Get-CimInstance Win32_ComputerSystem).Model
-$items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | ForEach-Object {
- $a=$_; $i=$null; $configNote='Disponível'
- try { $i=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction Stop } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $configNote='Sem interface IP disponível neste adaptador' } else { throw } }
- $s=Get-NetAdapterStatistics -Name $a.Name
- [pscustomobject]@{Name=$a.Name;Description=$a.InterfaceDescription;Id=[string]$a.InterfaceGuid;Index=[int]$a.ifIndex;Status=[string]$a.Status;Speed=[long]$a.ReceiveLinkSpeed;Driver=[string]$a.DriverVersion;DriverDate=[string]$a.DriverDate;Model=$model;ConfigNote=$configNote;IPv4=(@($i.IPv4Address | ForEach-Object {$_.IPAddress}) -join ', ');Gateway=(@($i.IPv4DefaultGateway | ForEach-Object {$_.NextHop}) -join ', ');Dns=(@($i.DNSServer | ForEach-Object {$_.ServerAddresses}) -join ', ');Received=[long]$s.ReceivedBytes;Sent=[long]$s.SentBytes;RxErrors=[long]$s.ReceivedPacketErrors;TxErrors=[long]$s.OutboundPacketErrors;RxDiscarded=[long]$s.ReceivedDiscardedPackets;TxDiscarded=[long]$s.OutboundDiscardedPackets}
-}); ConvertTo-Json -InputObject $items -Depth 4 -Compress";
-        return Json.Deserialize<Adapter[]>(PS(script));
+        var hardware=new List<Dictionary<string,object>>(); var configs=new List<Dictionary<string,object>>(); var drivers=new List<Dictionary<string,object>>();
+        string model="", note="Consulta direta ao Windows";
+        try { hardware=Query("SELECT GUID, PhysicalAdapter, InterfaceIndex, PNPDeviceID FROM Win32_NetworkAdapter"); configs=Query("SELECT InterfaceIndex, DHCPEnabled, DHCPServer, DHCPLeaseObtained, DHCPLeaseExpires FROM Win32_NetworkAdapterConfiguration"); model=Field(Query("SELECT Model FROM Win32_ComputerSystem").FirstOrDefault(),"Model"); drivers=Query("SELECT DeviceID, DriverVersion FROM Win32_PnPSignedDriver WHERE DeviceClass='NET'"); }
+        catch(Exception e) { note="Metadados WMI parcialmente indisponíveis: "+e.Message; }
+        var adapters=new List<Adapter>();
+        foreach(var nic in NetworkInterface.GetAllNetworkInterfaces()) {
+            if(nic.NetworkInterfaceType!=NetworkInterfaceType.Ethernet && nic.NetworkInterfaceType!=NetworkInterfaceType.GigabitEthernet && nic.NetworkInterfaceType!=NetworkInterfaceType.FastEthernetT && nic.NetworkInterfaceType!=NetworkInterfaceType.FastEthernetFx) continue;
+            var device=hardware.FirstOrDefault(x=>Field(x,"GUID").Trim('{','}').Equals(nic.Id.Trim('{','}'),StringComparison.OrdinalIgnoreCase));
+            if(device!=null && !String.Equals(Field(device,"PhysicalAdapter"),"True",StringComparison.OrdinalIgnoreCase)) continue;
+            var a=new Adapter {Name=nic.Name,Description=nic.Description,Id=nic.Id,Status=nic.OperationalStatus.ToString(),Speed=nic.Speed,Model=model,ConfigNote=note,Mac=BitConverter.ToString(nic.GetPhysicalAddress().GetAddressBytes())};
+            var driver=drivers.FirstOrDefault(x=>Field(x,"DeviceID")==Field(device,"PNPDeviceID")); a.Driver=Field(driver,"DriverVersion");
+            try {
+                var properties=nic.GetIPProperties(); var v4=properties.GetIPv4Properties(); a.Index=v4==null?0:v4.Index;
+                var config=configs.FirstOrDefault(x=>Field(x,"InterfaceIndex")==a.Index.ToString());
+                a.Dhcp=v4==null?"não disponível":(v4.IsDhcpEnabled?"habilitado":"desabilitado / manual");
+                a.DhcpServer=Field(config,"DHCPServer"); a.LeaseStart=Lease(config,"DHCPLeaseObtained"); a.LeaseEnd=Lease(config,"DHCPLeaseExpires");
+                var addresses=properties.UnicastAddresses.Where(x=>x.Address.AddressFamily==AddressFamily.InterNetwork).OrderBy(x=>x.Address.ToString().StartsWith("169.254.")?1:0).ToArray();
+                a.IPv4=String.Join(", ",addresses.Select(x=>x.Address.ToString())); a.Mask=String.Join(", ",addresses.Select(x=>x.IPv4Mask.ToString()));
+                a.IPv6=String.Join(", ",properties.UnicastAddresses.Where(x=>x.Address.AddressFamily==AddressFamily.InterNetworkV6).Select(x=>x.Address.ToString()));
+                a.Gateway=String.Join(", ",properties.GatewayAddresses.Where(x=>x.Address.AddressFamily==AddressFamily.InterNetwork).Select(x=>x.Address.ToString()));
+                a.Dns=String.Join(", ",properties.DnsAddresses.Select(x=>x.ToString())); a.DnsSuffix=properties.DnsSuffix;
+                var stats=nic.GetIPv4Statistics(); a.Received=stats.BytesReceived; a.Sent=stats.BytesSent; a.RxErrors=stats.IncomingPacketsWithErrors; a.TxErrors=stats.OutgoingPacketsWithErrors; a.RxDiscarded=stats.IncomingPacketsDiscarded; a.TxDiscarded=stats.OutgoingPacketsDiscarded;
+            } catch(Exception e) { a.ConfigNote+="; configuração/contadores incompletos: "+e.Message; }
+            adapters.Add(a);
+        }
+        return adapters.ToArray();
     }
     public static string Assessment(Adapter a) {
         if (a.Status != "Up") return "SEM LINK — confira cabo, encaixe e equipamento na outra ponta. Não é possível determinar a causa apenas por esse estado.";
         if (String.IsNullOrEmpty(a.IPv4)) return "LINK ATIVO, SEM IPv4 — verifique DHCP ou configuração manual. Comunicação IPv4 ainda não testada.";
         if (a.IPv4.Split(',').Any(x => x.Trim().StartsWith("169.254."))) return "LINK ATIVO, IPv4 AUTOMÁTICO LOCAL — pode haver ausência de resposta DHCP. Esse endereço também pode permitir comunicação local.";
-        if (a.Speed > 0 && a.Speed < 1000000000) return "LINK ABAIXO DE 1 Gb/s — pode ser limite da outra ponta, configuração ou cabeamento. Não comprova defeito no cabo.";
+        if (a.Speed > 0 && a.Speed < 1000000000) return "LINK ATIVO A " + Speed(a.Speed) + " — capacidade observada nesta conexão; pode refletir a outra ponta, configuração ou cabeamento. Não comprova defeito.";
         return "LINK ATIVO — velocidade negociada e configuração disponíveis. Isso não certifica o cabeamento nem comprova comunicação.";
     }
     public static string Report(Adapter a) {
         return "DIAGNÓSTICO RJ45 | " + DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz") + Environment.NewLine +
             "Computador: " + a.Model + "\r\nAdaptador: " + a.Description + "\r\nInterface: " + a.Name + " (" + a.Index + ")\r\nDriver: " + a.Driver + "\r\nEstado: " + a.Status +
-            "\r\nVelocidade negociada: " + Speed(a.Speed) + "\r\nConfiguração IP: " + Value(a.ConfigNote) + "\r\nIPv4: " + Value(a.IPv4) + "\r\nGateway: " + Value(a.Gateway) + "\r\nDNS configurado: " + Value(a.Dns) +
+            "\r\nVelocidade negociada: " + (a.Status=="Up"?Speed(a.Speed):"sem link") + "\r\nMAC local: " + Value(a.Mac) + "\r\nConfiguração IP: " + Value(a.ConfigNote) + "\r\nIPv4: " + Value(a.IPv4) + "\r\nMáscara (mesma ordem dos IPv4): " + Value(a.Mask) + "\r\nIPv6: " + Value(a.IPv6) + "\r\nGateway: " + Value(a.Gateway) + "\r\nDNS configurado: " + Value(a.Dns) + "\r\nSufixo DNS: " + Value(a.DnsSuffix) + "\r\nDHCP: " + Value(a.Dhcp) + "\r\nServidor DHCP: " + Value(a.DhcpServer) + "\r\nInício da concessão (hora local): " + Value(a.LeaseStart) + "\r\nFim da concessão (hora local): " + Value(a.LeaseEnd) +
             "\r\n\r\n" + Assessment(a) + "\r\n\r\nCONTADORES ACUMULADOS DO ADAPTADOR (não são medições do cabo):\r\nRecebidos: " + a.Received + " bytes | enviados: " + a.Sent + " bytes\r\nErros RX/TX: " + a.RxErrors + "/" + a.TxErrors + "\r\nDescartes RX/TX: " + a.RxDiscarded + "/" + a.TxDiscarded +
             "\r\n\r\nRECURSOS FÍSICOS NÃO DISPONÍVEIS NESTA VERSÃO:\r\nMapa dos 8 fios, comprimento, distância até falhas, PoE e certificação Cat5e/Cat6/Cat6A.\r\nNão há integração validada de TDR com o driver atual.\r\nVelocidade negociada não é velocidade real de transferência.\r\nDNS é exibido como configuração; resolução de nomes não foi testada.\r\n";
     }
@@ -77,21 +94,20 @@ $items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | 
         IPAddress sourceIP;
         if (a.Status != "Up" || !IPAddress.TryParse(source, out sourceIP)) throw new Exception("Conecte o cabo e aguarde um endereço IPv4 na Ethernet selecionada.");
         source = sourceIP.ToString();
-        int success = 0;
+        int success = 0; var latencies=new List<uint>();
         var log = new StringBuilder();
         log.AppendLine("\r\nTESTE ICMP | destino " + target + " | origem " + source + " | " + DateTimeOffset.Now.ToString("o"));
         for (int n = 1; n <= 10; n++) {
-            // Revalidate route before each packet so the Wi-Fi is never silently substituted.
-            string check = PS("$r=Find-NetRoute -RemoteIPAddress '" + target + "' -LocalIPAddress '" + source + "'; $idx=@($r | Where-Object { $_.PSObject.Properties.Name -contains 'DestinationPrefix' } | ForEach-Object { [int]$_.InterfaceIndex }); if ($idx.Count -ne 1 -or $idx[0] -ne " + a.Index + ") { throw 'A rota não usa a Ethernet selecionada. Teste interrompido.' }; 'OK'");
-            if (check != "OK") throw new Exception("Não foi possível confirmar a rota pela Ethernet.");
-            var raw = Run(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "PING.EXE"), "-4 -S " + source + " -n 1 -w 1000 " + target, 4000, true);
-            bool ok = Regex.IsMatch(raw, @"\bTTL\s*=\s*\d+", RegexOptions.IgnoreCase);
-            if (ok) success++;
-            string line = "Pacote " + n + "/10: " + (ok ? "resposta recebida" : "sem resposta ICMP confirmada");
+            NativeNetwork.VerifyRoute(sourceIP,ip,a.Index);
+            uint latency; uint code=NativeNetwork.Echo(sourceIP,ip,out latency);
+            bool ok=code==0;
+            if (ok) {success++;latencies.Add(latency);}
+            string line = "Pacote " + n + "/10: " + (ok ? "resposta em " + latency + " ms" : "sem resposta bem-sucedida (código Windows " + code + ")");
             log.AppendLine(line); progress(line);
             System.Threading.Thread.Sleep(200);
         }
         log.AppendLine("Respostas: " + success + "/10 | ausência de resposta: " + ((10-success)*10) + "%.");
+        if(latencies.Count>0) log.AppendLine("Latência mín/média/máx: "+latencies.Min()+" / "+latencies.Average(x=>(double)x).ToString("0.0")+" / "+latencies.Max()+" ms.");
         log.AppendLine("Ausência de resposta pode ser bloqueio ICMP, destino indisponível ou falha de rede; não identifica sozinha defeito no cabo.");
         return log.ToString();
     }
@@ -100,7 +116,7 @@ $items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | 
         if (args.Contains("--self-test") || args.Contains("--unit-test")) {
             try {
                 if (!Assessment(new Adapter { Status="Disconnected" }).StartsWith("SEM LINK")) throw new Exception("Estado desconectado");
-                if (!Assessment(new Adapter { Status="Up", IPv4="10.0.0.2", Speed=100000000 }).StartsWith("LINK ABAIXO")) throw new Exception("Link limitado");
+                if (!Assessment(new Adapter { Status="Up", IPv4="10.0.0.2", Speed=100000000 }).StartsWith("LINK ATIVO A 100")) throw new Exception("Link de 100 Mb/s");
                 if (!Assessment(new Adapter { Status="Up", IPv4="169.254.1.1" }).Contains("AUTOMÁTICO")) throw new Exception("IPv4 local");
                 if (!Assessment(new Adapter { Status="Up", IPv4="" }).StartsWith("LINK ATIVO, SEM")) throw new Exception("Sem IPv4");
                 if (!Assessment(new Adapter { Status="Up", IPv4="10.0.0.2", Speed=1000000000 }).StartsWith("LINK ATIVO —")) throw new Exception("Link gigabit");
@@ -108,6 +124,9 @@ $items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | 
                 try { Test(new Adapter(), "destino-invalido", s=>{}); } catch(Exception) { invalidRejected=true; }
                 if (!invalidRejected) throw new Exception("Destino inválido foi aceito");
                 if(args.Contains("--unit-test")) { Environment.ExitCode=0; return; }
+                var loopback=NetworkInterface.GetAllNetworkInterfaces().First(x=>x.NetworkInterfaceType==NetworkInterfaceType.Loopback);
+                NativeNetwork.VerifyRoute(IPAddress.Loopback,IPAddress.Loopback,loopback.GetIPProperties().GetIPv4Properties().Index);
+                uint loopLatency; if(NativeNetwork.Echo(IPAddress.Loopback,IPAddress.Loopback,out loopLatency)!=0) throw new Exception("Falha ICMP loopback");
                 var adapters = Read();
                 Console.WriteLine("Verificações de interpretação: OK\r\nAdaptadores Ethernet encontrados: " + adapters.Length + "\r\n\r\n" + String.Join("\r\n", adapters.Select(Report)));
                 Environment.ExitCode=0;
@@ -125,12 +144,12 @@ public class MainForm : Form {
     Button refresh = new Button(), test = new Button(), save = new Button(); CheckBox monitor = new CheckBox();
     System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer(); bool busy; string lastId; string lastState; int transitions;
     public MainForm() {
-        Text="Diagnóstico RJ45 1.0.1 — Portátil"; Width=1060; Height=790; MinimumSize=new Size(850,650); StartPosition=FormStartPosition.CenterScreen;
+        Text="Diagnóstico RJ45 1.1.0 — Portátil"; Width=1060; Height=790; MinimumSize=new Size(850,650); StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10); BackColor=Color.FromArgb(241,245,249);
         var layout=new TableLayoutPanel { Dock=DockStyle.Fill, Padding=new Padding(24), ColumnCount=1, RowCount=7 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,52)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,38)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,44)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,46)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,58)); layout.RowStyles.Add(new RowStyle(SizeType.Percent,100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,30)); Controls.Add(layout);
         layout.Controls.Add(new Label { Text="RJ45  /  Diagnóstico de ponto de rede", Dock=DockStyle.Fill, Font=new Font("Segoe UI",20,FontStyle.Bold), ForeColor=Color.FromArgb(15,45,75) });
-        layout.Controls.Add(new Label { Text="Perfil inicial: HP EliteBook 640 G11 • Intel I219-LM | seleção automática de outras placas Ethernet", Dock=DockStyle.Fill });
+        layout.Controls.Add(new Label { Text="Consultas diretas ao Windows • DHCP, endereçamento e comunicação • sem logs automáticos", Dock=DockStyle.Fill });
         adapters.Dock=DockStyle.Fill; adapters.DropDownStyle=ComboBoxStyle.DropDownList; layout.Controls.Add(adapters);
         var actions=new FlowLayoutPanel { Dock=DockStyle.Fill };
         refresh.Text="Atualizar"; test.Text="Testar IPv4"; save.Text="Salvar relatório";
@@ -140,7 +159,7 @@ public class MainForm : Form {
         report.Multiline=true; report.ReadOnly=true; report.ScrollBars=ScrollBars.Vertical; report.Dock=DockStyle.Fill; report.Font=new Font("Consolas",10); report.BackColor=Color.White; report.Text="Conecte o cabo ao notebook e a um switch ou roteador ligado.\r\nClique em Atualizar para ler a porta RJ45.\r\n\r\nA ferramenta verifica link e comunicação; não certifica o cabo."; layout.Controls.Add(report);
         status.Dock=DockStyle.Fill; status.Text="Portátil: resultados em memória. Salve um relatório somente se desejar."; layout.Controls.Add(status);
         refresh.Click+=async (s,e)=>await RefreshData(); test.Click+=async (s,e)=>await TestData();
-        adapters.SelectedIndexChanged+=(s,e)=>ShowAdapter(); save.Click+=(s,e)=> { using(var dialog=new SaveFileDialog { Filter="Relatório de texto (*.txt)|*.txt",FileName="diagnostico-rj45-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".txt" }) if(dialog.ShowDialog()==DialogResult.OK) File.WriteAllText(dialog.FileName,report.Text,Encoding.UTF8); };
+        adapters.SelectedIndexChanged+=(s,e)=>ShowAdapter(); save.Click+=(s,e)=> { using(var dialog=new SaveFileDialog { Filter="Relatório de texto (*.txt)|*.txt",FileName="diagnostico-rj45-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".txt" }) if(dialog.ShowDialog()==DialogResult.OK) {try {File.WriteAllText(dialog.FileName,report.Text,Encoding.UTF8);} catch(Exception error) {MessageBox.Show(this,error.Message,"Não foi possível salvar",MessageBoxButtons.OK,MessageBoxIcon.Warning);} } };
         timer.Interval=8000; timer.Tick+=async (s,e)=> { if(monitor.Checked && !busy) await RefreshData(); }; monitor.CheckedChanged+=(s,e)=> { timer.Enabled=monitor.Checked; }; FormClosed+=(s,e)=>timer.Dispose();
         Shown+=async (s,e)=>await RefreshData();
     }

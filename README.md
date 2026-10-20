@@ -1,4 +1,4 @@
-# Diagnóstico RJ45 1.0.1 — Portátil
+# Diagnóstico RJ45 1.1.0 — Portátil
 
 Ferramenta de diagnóstico Ethernet para Windows, com perfil inicial para HP EliteBook 640 G11 e Intel I219-LM. Outros computadores usam a enumeração padrão de placas Ethernet físicas do Windows.
 
@@ -12,13 +12,13 @@ Essa declaração se aplica também às versões 1.0.0 e 1.0.1 já publicadas. O
 
 Distribuição em **um único `DiagnosticoRJ45.exe`**. Copie para uma pasta ou pendrive e execute. Não tem instalador, configuração externa, banco de dados ou log automático. Os dados ficam em memória e são descartados ao fechar. **Salvar relatório** é opcional e grava somente no local escolhido pelo usuário. Não extrai componentes em uma pasta temporária.
 
-Usa componentes já presentes no Windows compatível (.NET Framework e Windows PowerShell); não inclui runtimes externos. O Windows e os produtos de segurança podem manter seus próprios registros de execução, independentemente do aplicativo. A portabilidade não dispensa as políticas de execução da empresa.
+Usa .NET Framework e APIs já presentes no Windows; não inclui runtimes externos. A versão 1.1.0 não inicia PowerShell, ping ou outros processos auxiliares. O Windows e os produtos de segurança podem manter seus próprios registros de execução. A portabilidade não dispensa as políticas de execução da empresa.
 
 ## Uso
 
 Baixe o executável na seção **Releases**. Conecte o cabo a um equipamento de rede ligado, abra o aplicativo e clique em **Atualizar**. Selecione a interface e use **Testar IPv4** para enviar dez pings ao gateway ou a um IPv4 informado. A rota e o endereço de origem são verificados para a Ethernet selecionada.
 
-Exibe link, velocidade negociada, IPv4, gateway, DNS configurado e contadores de erros e tráfego. Permite acompanhar o estado a cada oito segundos e salvar relatório de texto.
+Exibe link, velocidade negociada, MAC local, IPv4, máscara, IPv6, gateway, DNS configurado, sufixo DNS, estado DHCP, servidor DHCP e validade da concessão, quando disponíveis. Inclui contadores de erros e tráfego, acompanhamento do estado e exportação opcional. O teste ICMP informa latência mínima, média e máxima. Não identifica switch, porta ou VLAN por LLDP/CDP nesta versão.
 
 ## Limitações e validação
 
@@ -28,7 +28,7 @@ A consulta inicial foi validada na Intel I219-LM, sem cabo conectado. A versão 
 
 ## Desenvolvimento
 
-Requisitos: Windows 10/11, .NET Framework 4.8 e Windows PowerShell 5.1 com módulos NetAdapter/NetTCPIP.
+Requisitos de execução: Windows 10/11 e .NET Framework 4.8. Compilar e executar o CI usa PowerShell, mas o EXE utiliza diretamente .NET, WMI e IP Helper. O manifesto solicita apenas os privilégios do usuário atual (`asInvoker`).
 
 ```powershell
 .\compilar.ps1
@@ -36,7 +36,7 @@ $p = Start-Process .\DiagnosticoRJ45.exe -ArgumentList '--unit-test' -Wait -Pass
 if ($p.ExitCode -ne 0) { throw 'Falha nos testes' }
 ```
 
-`--unit-test` verifica interpretações e rejeição de destino inválido sem consultar hardware nem enviar pacotes. `--self-test` adiciona consulta local. Ambos retornam código de saída e não criam arquivos. O CI também executa esses modos em uma pasta contendo apenas o EXE e verifica a ausência de arquivos auxiliares nessa pasta. A opção de captura `--preview` foi removida.
+`--unit-test` verifica interpretações e rejeição de destino inválido sem consultar hardware nem enviar pacotes. `--self-test` adiciona consulta local, consulta da rota de loopback e ICMP para o próprio computador. Ambos retornam código de saída e não criam arquivos. O CI executa esses modos em uma pasta contendo apenas o EXE e verifica a ausência de arquivos auxiliares nessa pasta.
 
 ## Fluxo de trabalho
 

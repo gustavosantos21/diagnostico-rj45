@@ -1,4 +1,4 @@
-# Diagnóstico RJ45 — versão portátil 1.0.1
+# Diagnóstico RJ45 — versão portátil 1.1.0
 
 Código aberto e uso livre sob a Unlicense, sem cobrança, ativação ou chave de licença. A declaração está no arquivo LICENSE do repositório; ele não precisa acompanhar o EXE para executar a ferramenta. O aplicativo continua sujeito às políticas de segurança do Windows.
 
@@ -14,7 +14,7 @@ Os testes não alteram IP, drivers, configuração do adaptador nem firewall. N�
 
 Não mede pares, comprimento, distância até rompimentos, PoE, interferência ou certificação de categoria. Nenhuma interface TDR compatível foi validada com o driver 20.0.3.21 instalado. Uma conexão a 100 Mb/s pode ser limite do equipamento remoto ou configuração e não confirma falha do cabo. Os contadores são do adaptador, podem incluir tráfego anterior e não indicam a causa dos erros.
 
-Requisitos: Windows 10/11 com Windows PowerShell 5.1, módulos NetAdapter/NetTCPIP e .NET Framework 4.8. Novas placas usam os dados padrão do Windows; recursos proprietários precisam de integração e validação específicas.
+Requisitos: Windows 10/11 e .NET Framework 4.8. A versão 1.1.0 consulta diretamente .NET, WMI e IP Helper, sem executar PowerShell ou ping. Novas placas usam os dados padrão do Windows; recursos proprietários precisam de integração e validação específicas. O manifesto não exige elevação administrativa.
 
 `compilar.ps1` recompila o código-fonte com o compilador .NET do Windows. `DiagnosticoRJ45.exe --self-test` verifica a interpretação de estados e consulta o hardware real sem gravar arquivos. `--unit-test` executa apenas verificações sem hardware. Ambos usam o código de saída para sinalizar falhas. Revise relatórios exportados manualmente antes de compartilhá-los, pois contêm configuração local da rede.
 
