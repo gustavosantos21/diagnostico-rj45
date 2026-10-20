@@ -20,7 +20,7 @@ using System.Reflection;
 [assembly: AssemblyInformationalVersion("1.0.1")]
 
 public class Adapter {
-    public string Name, Description, Id, Status, Driver, DriverDate, IPv4, Gateway, Dns, Model;
+    public string Name, Description, Id, Status, Driver, DriverDate, IPv4, Gateway, Dns, Model, ConfigNote;
     public long Speed, Received, Sent, RxErrors, TxErrors, RxDiscarded, TxDiscarded;
     public int Index;
     public override string ToString() { return Name + " — " + Description; }
@@ -46,8 +46,10 @@ public class Probe {
         string script = @"
 $model=(Get-CimInstance Win32_ComputerSystem).Model
 $items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | ForEach-Object {
- $a=$_; $i=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex; $s=Get-NetAdapterStatistics -Name $a.Name
- [pscustomobject]@{Name=$a.Name;Description=$a.InterfaceDescription;Id=[string]$a.InterfaceGuid;Index=[int]$a.ifIndex;Status=[string]$a.Status;Speed=[long]$a.ReceiveLinkSpeed;Driver=[string]$a.DriverVersion;DriverDate=[string]$a.DriverDate;Model=$model;IPv4=(@($i.IPv4Address | ForEach-Object {$_.IPAddress}) -join ', ');Gateway=(@($i.IPv4DefaultGateway | ForEach-Object {$_.NextHop}) -join ', ');Dns=(@($i.DNSServer | ForEach-Object {$_.ServerAddresses}) -join ', ');Received=[long]$s.ReceivedBytes;Sent=[long]$s.SentBytes;RxErrors=[long]$s.ReceivedPacketErrors;TxErrors=[long]$s.OutboundPacketErrors;RxDiscarded=[long]$s.ReceivedDiscardedPackets;TxDiscarded=[long]$s.OutboundDiscardedPackets}
+ $a=$_; $i=$null; $configNote='Disponível'
+ try { $i=Get-NetIPConfiguration -InterfaceIndex $a.ifIndex -ErrorAction Stop } catch { if ($_.CategoryInfo.Category -eq 'ObjectNotFound') { $configNote='Sem interface IP disponível neste adaptador' } else { throw } }
+ $s=Get-NetAdapterStatistics -Name $a.Name
+ [pscustomobject]@{Name=$a.Name;Description=$a.InterfaceDescription;Id=[string]$a.InterfaceGuid;Index=[int]$a.ifIndex;Status=[string]$a.Status;Speed=[long]$a.ReceiveLinkSpeed;Driver=[string]$a.DriverVersion;DriverDate=[string]$a.DriverDate;Model=$model;ConfigNote=$configNote;IPv4=(@($i.IPv4Address | ForEach-Object {$_.IPAddress}) -join ', ');Gateway=(@($i.IPv4DefaultGateway | ForEach-Object {$_.NextHop}) -join ', ');Dns=(@($i.DNSServer | ForEach-Object {$_.ServerAddresses}) -join ', ');Received=[long]$s.ReceivedBytes;Sent=[long]$s.SentBytes;RxErrors=[long]$s.ReceivedPacketErrors;TxErrors=[long]$s.OutboundPacketErrors;RxDiscarded=[long]$s.ReceivedDiscardedPackets;TxDiscarded=[long]$s.OutboundDiscardedPackets}
 }); ConvertTo-Json -InputObject $items -Depth 4 -Compress";
         return Json.Deserialize<Adapter[]>(PS(script));
     }
@@ -61,7 +63,7 @@ $items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | 
     public static string Report(Adapter a) {
         return "DIAGNÓSTICO RJ45 | " + DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz") + Environment.NewLine +
             "Computador: " + a.Model + "\r\nAdaptador: " + a.Description + "\r\nInterface: " + a.Name + " (" + a.Index + ")\r\nDriver: " + a.Driver + "\r\nEstado: " + a.Status +
-            "\r\nVelocidade negociada: " + Speed(a.Speed) + "\r\nIPv4: " + Value(a.IPv4) + "\r\nGateway: " + Value(a.Gateway) + "\r\nDNS configurado: " + Value(a.Dns) +
+            "\r\nVelocidade negociada: " + Speed(a.Speed) + "\r\nConfiguração IP: " + Value(a.ConfigNote) + "\r\nIPv4: " + Value(a.IPv4) + "\r\nGateway: " + Value(a.Gateway) + "\r\nDNS configurado: " + Value(a.Dns) +
             "\r\n\r\n" + Assessment(a) + "\r\n\r\nCONTADORES ACUMULADOS DO ADAPTADOR (não são medições do cabo):\r\nRecebidos: " + a.Received + " bytes | enviados: " + a.Sent + " bytes\r\nErros RX/TX: " + a.RxErrors + "/" + a.TxErrors + "\r\nDescartes RX/TX: " + a.RxDiscarded + "/" + a.TxDiscarded +
             "\r\n\r\nRECURSOS FÍSICOS NÃO DISPONÍVEIS NESTA VERSÃO:\r\nMapa dos 8 fios, comprimento, distância até falhas, PoE e certificação Cat5e/Cat6/Cat6A.\r\nNão há integração validada de TDR com o driver atual.\r\nVelocidade negociada não é velocidade real de transferência.\r\nDNS é exibido como configuração; resolução de nomes não foi testada.\r\n";
     }

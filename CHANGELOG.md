@@ -6,6 +6,7 @@
 - Removida geração de arquivos dos modos de verificação e removido o modo de captura de imagem.
 - Relatórios permanecem em memória; exportação apenas por escolha explícita do usuário.
 - CI verifica os modos de diagnóstico em uma pasta com somente o executável e detecta arquivos auxiliares criados nessa pasta.
+- Adaptadores sem interface IP disponível continuam visíveis, com indicação dessa condição, sem impedir a consulta dos demais.
 
 
 ## 1.0.0 — 2026-10-20
