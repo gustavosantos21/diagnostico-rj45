@@ -1,6 +1,12 @@
-# Diagnóstico RJ45 1.0
+# Diagnóstico RJ45 1.0.1 — Portátil
 
 Ferramenta de diagnóstico Ethernet para Windows, com perfil inicial para HP EliteBook 640 G11 e Intel I219-LM. Outros computadores usam a enumeração padrão de placas Ethernet físicas do Windows.
+
+## Portabilidade
+
+Distribuição em **um único `DiagnosticoRJ45.exe`**. Copie para uma pasta ou pendrive e execute. Não tem instalador, configuração externa, banco de dados ou log automático. Os dados ficam em memória e são descartados ao fechar. **Salvar relatório** é opcional e grava somente no local escolhido pelo usuário. Não extrai componentes em uma pasta temporária.
+
+Usa componentes já presentes no Windows compatível (.NET Framework e Windows PowerShell); não inclui runtimes externos. O Windows e os produtos de segurança podem manter seus próprios registros de execução, independentemente do aplicativo. A portabilidade não dispensa as políticas de execução da empresa.
 
 ## Uso
 
@@ -24,7 +30,7 @@ $p = Start-Process .\DiagnosticoRJ45.exe -ArgumentList '--unit-test' -Wait -Pass
 if ($p.ExitCode -ne 0) { throw 'Falha nos testes' }
 ```
 
-`--unit-test` verifica interpretações e rejeição de destino inválido sem consultar hardware nem enviar pacotes. `--self-test` adiciona consulta local e gera relatório com dados da configuração de rede. Esses relatórios são ignorados pelo Git.
+`--unit-test` verifica interpretações e rejeição de destino inválido sem consultar hardware nem enviar pacotes. `--self-test` adiciona consulta local. Ambos retornam código de saída e não criam arquivos. O CI também executa esses modos em uma pasta contendo apenas o EXE e verifica a ausência de arquivos auxiliares nessa pasta. A opção de captura `--preview` foi removida.
 
 ## Fluxo de trabalho
 

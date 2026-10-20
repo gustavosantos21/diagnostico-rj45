@@ -1,4 +1,6 @@
-# Diagnóstico RJ45 — primeira versão
+# Diagnóstico RJ45 — versão portátil 1.0.1
+
+É necessário somente o `DiagnosticoRJ45.exe`. Pode ser movido para outra pasta ou pendrive, sem instalação. Não cria configuração, logs, banco de dados ou arquivos temporários próprios. Resultados ficam na memória; use **Salvar relatório** apenas se quiser exportá-los para um local escolhido. Utiliza componentes do Windows descritos abaixo e continua sujeito às políticas corporativas.
 
 Abra `DiagnosticoRJ45.exe`, conecte o cabo a um switch ou roteador ligado e clique em **Atualizar**. A Intel I219-LM é selecionada por padrão neste HP EliteBook 640 G11. Em outros computadores, o aplicativo enumera placas Ethernet físicas e permite selecionar a desejada.
 
@@ -12,7 +14,7 @@ Não mede pares, comprimento, distância até rompimentos, PoE, interferência o
 
 Requisitos: Windows 10/11 com Windows PowerShell 5.1, módulos NetAdapter/NetTCPIP e .NET Framework 4.8. Novas placas usam os dados padrão do Windows; recursos proprietários precisam de integração e validação específicas.
 
-`compilar.ps1` recompila o código-fonte com o compilador .NET do Windows. `DiagnosticoRJ45.exe --self-test` verifica a interpretação de estados e consulta o hardware real, gravando `verificacao-local.txt`. Este relatório contém configuração local da rede: revise antes de compartilhar. A validação inicial foi feita sem cabo conectado; o teste ativo precisa ser confirmado com cabo e switch disponíveis.
+`compilar.ps1` recompila o código-fonte com o compilador .NET do Windows. `DiagnosticoRJ45.exe --self-test` verifica a interpretação de estados e consulta o hardware real sem gravar arquivos. `--unit-test` executa apenas verificações sem hardware. Ambos usam o código de saída para sinalizar falhas. Revise relatórios exportados manualmente antes de compartilhá-los, pois contêm configuração local da rede.
 
 ## Validação em 20/10/2026
 

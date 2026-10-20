@@ -15,9 +15,9 @@ using System.Reflection;
 
 [assembly: AssemblyTitle("Diagnóstico RJ45")]
 [assembly: AssemblyDescription("Diagnóstico de portas Ethernet para Windows")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyInformationalVersion("1.0.1")]
 
 public class Adapter {
     public string Name, Description, Id, Status, Driver, DriverDate, IPv4, Gateway, Dns, Model;
@@ -107,13 +107,12 @@ $items=@(Get-NetAdapter -Physical | Where-Object { $_.MediaType -eq '802.3' } | 
                 if (!invalidRejected) throw new Exception("Destino inválido foi aceito");
                 if(args.Contains("--unit-test")) { Environment.ExitCode=0; return; }
                 var adapters = Read();
-                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"verificacao-local.txt"), "Verificações de interpretação: OK\r\nAdaptadores Ethernet encontrados: " + adapters.Length + "\r\n\r\n" + String.Join("\r\n", adapters.Select(Report)), Encoding.UTF8);
+                Console.WriteLine("Verificações de interpretação: OK\r\nAdaptadores Ethernet encontrados: " + adapters.Length + "\r\n\r\n" + String.Join("\r\n", adapters.Select(Report)));
                 Environment.ExitCode=0;
-            } catch (Exception e) { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"erro-verificacao.txt"),e.ToString()); Environment.ExitCode=1; }
+            } catch (Exception e) { Console.Error.WriteLine(e.Message); Environment.ExitCode=1; }
             return;
         }
         var form = new MainForm();
-        if (args.Contains("--preview")) { form.Show(); var watch=Stopwatch.StartNew(); do { Application.DoEvents(); System.Threading.Thread.Sleep(20); } while(form.IsBusy && watch.ElapsedMilliseconds<30000); using (var bitmap = new Bitmap(form.Width,form.Height)) { form.DrawToBitmap(bitmap,new Rectangle(0,0,form.Width,form.Height)); bitmap.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"preview.png")); } form.Close(); return; }
         Application.Run(form);
     }
 }
@@ -124,7 +123,7 @@ public class MainForm : Form {
     Button refresh = new Button(), test = new Button(), save = new Button(); CheckBox monitor = new CheckBox();
     System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer(); bool busy; string lastId; string lastState; int transitions;
     public MainForm() {
-        Text="Diagnóstico RJ45 1.0"; Width=1060; Height=790; MinimumSize=new Size(850,650); StartPosition=FormStartPosition.CenterScreen;
+        Text="Diagnóstico RJ45 1.0.1 — Portátil"; Width=1060; Height=790; MinimumSize=new Size(850,650); StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10); BackColor=Color.FromArgb(241,245,249);
         var layout=new TableLayoutPanel { Dock=DockStyle.Fill, Padding=new Padding(24), ColumnCount=1, RowCount=7 };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,52)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,38)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,44)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,46)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,58)); layout.RowStyles.Add(new RowStyle(SizeType.Percent,100)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,30)); Controls.Add(layout);
@@ -137,7 +136,7 @@ public class MainForm : Form {
         monitor.Text="Acompanhar link (8 s)"; monitor.AutoSize=true; monitor.Margin=new Padding(16,8,0,0); actions.Controls.Add(monitor); layout.Controls.Add(actions);
         var destination=new FlowLayoutPanel { Dock=DockStyle.Fill }; destination.Controls.Add(new Label { Text="Destino IPv4:", AutoSize=true, Margin=new Padding(0,9,8,0) }); target.Width=170; destination.Controls.Add(target); destination.Controls.Add(new Label { Text="Em branco: gateway. 10 pacotes; rota confirmada pela Ethernet.",AutoSize=true, Margin=new Padding(12,9,0,0) }); layout.Controls.Add(destination);
         report.Multiline=true; report.ReadOnly=true; report.ScrollBars=ScrollBars.Vertical; report.Dock=DockStyle.Fill; report.Font=new Font("Consolas",10); report.BackColor=Color.White; report.Text="Conecte o cabo ao notebook e a um switch ou roteador ligado.\r\nClique em Atualizar para ler a porta RJ45.\r\n\r\nA ferramenta verifica link e comunicação; não certifica o cabo."; layout.Controls.Add(report);
-        status.Dock=DockStyle.Fill; status.Text="Pronto. Nenhuma configuração de rede é alterada."; layout.Controls.Add(status);
+        status.Dock=DockStyle.Fill; status.Text="Portátil: resultados em memória. Salve um relatório somente se desejar."; layout.Controls.Add(status);
         refresh.Click+=async (s,e)=>await RefreshData(); test.Click+=async (s,e)=>await TestData();
         adapters.SelectedIndexChanged+=(s,e)=>ShowAdapter(); save.Click+=(s,e)=> { using(var dialog=new SaveFileDialog { Filter="Relatório de texto (*.txt)|*.txt",FileName="diagnostico-rj45-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".txt" }) if(dialog.ShowDialog()==DialogResult.OK) File.WriteAllText(dialog.FileName,report.Text,Encoding.UTF8); };
         timer.Interval=8000; timer.Tick+=async (s,e)=> { if(monitor.Checked && !busy) await RefreshData(); }; monitor.CheckedChanged+=(s,e)=> { timer.Enabled=monitor.Checked; }; FormClosed+=(s,e)=>timer.Dispose();

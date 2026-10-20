@@ -22,9 +22,21 @@ jobs:
         run: |
           $p = Start-Process .\DiagnosticoRJ45.exe -ArgumentList '--unit-test' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Falha nas verificações: $($p.ExitCode)" }
+      - name: Verificar execução portátil sem arquivos auxiliares
+        shell: powershell
+        run: |
+          $portable = Join-Path $env:RUNNER_TEMP 'RJ45-Portable'
+          New-Item -ItemType Directory -Path $portable -Force | Out-Null
+          Copy-Item .\DiagnosticoRJ45.exe $portable
+          foreach ($mode in @('--unit-test', '--self-test')) {
+            $p = Start-Process (Join-Path $portable 'DiagnosticoRJ45.exe') -ArgumentList $mode -WorkingDirectory $portable -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "Falha no modo $mode" }
+          }
+          $files = @(Get-ChildItem -LiteralPath $portable -Force -Recurse)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'DiagnosticoRJ45.exe') { throw 'Foram criados arquivos auxiliares na pasta portátil' }
       - uses: actions/upload-artifact@v4
         with:
-          name: DiagnosticoRJ45-1.0
+          name: DiagnosticoRJ45-Portatil
           path: DiagnosticoRJ45.exe
           if-no-files-found: error
 
@@ -38,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: DiagnosticoRJ45-1.0
+          name: DiagnosticoRJ45-Portatil
           path: dist
       - name: Publicar versão
         shell: pwsh
