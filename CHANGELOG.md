@@ -1,5 +1,10 @@
 # Histórico de versões
 
+## Documentação — 2026-10-20
+
+- Código original e executáveis disponibilizados sob a Unlicense, incluindo as versões 1.0.0 e 1.0.1.
+- Repositório preparado para acesso público, com relatórios locais fora do histórico Git.
+
 ## 1.0.1 — 2026-10-20
 
 - Distribuição portátil com um único executável, sem configuração externa ou gravação automática de logs.
