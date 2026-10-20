@@ -29,8 +29,19 @@ jobs:
           New-Item -ItemType Directory -Path $portable -Force | Out-Null
           Copy-Item .\DiagnosticoRJ45.exe $portable
           foreach ($mode in @('--unit-test', '--self-test')) {
-            $p = Start-Process (Join-Path $portable 'DiagnosticoRJ45.exe') -ArgumentList $mode -WorkingDirectory $portable -Wait -PassThru
-            if ($p.ExitCode -ne 0) { throw "Falha no modo $mode" }
+            $p = New-Object System.Diagnostics.Process
+            $p.StartInfo.FileName = Join-Path $portable 'DiagnosticoRJ45.exe'
+            $p.StartInfo.Arguments = $mode
+            $p.StartInfo.WorkingDirectory = $portable
+            $p.StartInfo.UseShellExecute = $false
+            $p.StartInfo.RedirectStandardOutput = $true
+            $p.StartInfo.RedirectStandardError = $true
+            $p.Start() | Out-Null
+            $output = $p.StandardOutput.ReadToEndAsync()
+            $errorOutput = $p.StandardError.ReadToEndAsync()
+            if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "Tempo excedido no modo $mode" }
+            if ($p.ExitCode -ne 0) { throw "Falha no modo ${mode}: $($errorOutput.Result)" }
+            $p.Dispose()
           }
           $files = @(Get-ChildItem -LiteralPath $portable -Force -Recurse)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'DiagnosticoRJ45.exe') { throw 'Foram criados arquivos auxiliares na pasta portátil' }
