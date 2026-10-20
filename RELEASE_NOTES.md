@@ -1,5 +1,7 @@
 # Diagnóstico RJ45 1.0.1 — Portátil
 
+Código aberto sob a Unlicense, sem cobrança, ativação ou chave de licença. Permite modificação e redistribuição, inclusive comercialmente. Veja LICENSE no repositório para a declaração completa. Esta declaração também cobre a versão 1.0.0 anterior.
+
 Baixe somente **DiagnosticoRJ45.exe** e execute em uma pasta ou pendrive. Não requer instalação, arquivos de configuração ou pasta de logs. Os resultados ficam em memória; exportar relatório é opcional.
 
 Os modos de verificação também não geram arquivos. Não há extração de componentes em pasta temporária. Usa .NET Framework 4.8 e Windows PowerShell 5.1 presentes no Windows compatível.

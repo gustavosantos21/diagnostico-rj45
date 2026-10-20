@@ -1,5 +1,7 @@
 # Diagnóstico RJ45 — versão portátil 1.0.1
 
+Código aberto e uso livre sob a Unlicense, sem cobrança, ativação ou chave de licença. A declaração está no arquivo LICENSE do repositório; ele não precisa acompanhar o EXE para executar a ferramenta. O aplicativo continua sujeito às políticas de segurança do Windows.
+
 É necessário somente o `DiagnosticoRJ45.exe`. Pode ser movido para outra pasta ou pendrive, sem instalação. Não cria configuração, logs, banco de dados ou arquivos temporários próprios. Resultados ficam na memória; use **Salvar relatório** apenas se quiser exportá-los para um local escolhido. Utiliza componentes do Windows descritos abaixo e continua sujeito às políticas corporativas.
 
 Abra `DiagnosticoRJ45.exe`, conecte o cabo a um switch ou roteador ligado e clique em **Atualizar**. A Intel I219-LM é selecionada por padrão neste HP EliteBook 640 G11. Em outros computadores, o aplicativo enumera placas Ethernet físicas e permite selecionar a desejada.
