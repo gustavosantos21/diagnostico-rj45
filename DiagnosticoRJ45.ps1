@@ -219,7 +219,19 @@ function Get-DefaultRouteSummary {
     return @($rows | Sort-Object Family, Metric)
 }
 
-function Get-LinkEvents([string]$Provider, [int]$Days = 7) {
+# Resume a mensagem de um evento do driver em uma linha. Drivers como o da Intel começam a
+# mensagem com o nome do adaptador; essa linha é omitida para mostrar o texto do evento.
+function ConvertTo-EventSummary([string]$Message, [string]$AdapterDescription) {
+    $lines = @("$Message" -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 })
+    if ($lines.Count -eq 0) { return '(texto do fabricante indisponível)' }
+    $useful = @($lines | Where-Object { -not ((Test-HasText $AdapterDescription) -and $_.Equals($AdapterDescription, [StringComparison]::OrdinalIgnoreCase)) })
+    if ($useful.Count -eq 0) { $useful = $lines }
+    $text = ($useful -join ' ')
+    if ($text.Length -gt 180) { $text = $text.Substring(0, 177) + '...' }
+    return $text
+}
+
+function Get-LinkEvents([string]$Provider, [string]$AdapterDescription, [int]$Days = 7) {
     $result = [pscustomobject]@{ Lines = @(); Count = 0; Summary = ''; Note = '' }
     if (-not (Test-HasText $Provider)) { $result.Note = 'serviço do driver não identificado'; return $result }
     try {
@@ -235,10 +247,7 @@ function Get-LinkEvents([string]$Provider, [int]$Days = 7) {
     $result.Count = $events.Count
     $result.Summary = (@($events | Group-Object Id | Sort-Object Count -Descending | ForEach-Object { "ID $($_.Name): $($_.Count)" }) -join ' | ')
     $result.Lines = @($events | Select-Object -First 25 | ForEach-Object {
-            $message = "$($_.Message)"
-            if (-not (Test-HasText $message)) { $message = '(texto do fabricante indisponível)' }
-            $message = ($message -split "`r?`n")[0].Trim()
-            if ($message.Length -gt 150) { $message = $message.Substring(0, 147) + '...' }
+            $message = ConvertTo-EventSummary "$($_.Message)" $AdapterDescription
             '{0:yyyy-MM-dd HH:mm:ss}  ID {1,-5} {2}' -f $_.TimeCreated, $_.Id, $message
         })
     return $result
@@ -358,7 +367,7 @@ function Get-EthernetInventory {
     foreach ($nic in $physical) {
         if (-not (Test-IsEthernetMedium $nic)) { continue }
         $detail = Get-AdapterDetail $nic $configs $wmiNics $globalNotes
-        $detail.Events = Get-LinkEvents $detail.ServiceName
+        $detail.Events = Get-LinkEvents $detail.ServiceName $detail.Description
         $adapters += $detail
     }
     return [pscustomobject]@{
@@ -704,6 +713,9 @@ function Invoke-UnitChecks {
     & $check (Test-IPv4Text '10.1.2.3') 'IPv4 válido'
     & $check (-not (Test-IPv4Text 'destino-invalido')) 'IPv4 inválido'
     & $check (Test-IPv6Text 'fe80::1%7') 'IPv6 com escopo'
+    & $check ((ConvertTo-EventSummary "Intel(R) Ethernet Connection (18) I219-LM`r`n Network link is disconnected." 'Intel(R) Ethernet Connection (18) I219-LM') -eq 'Network link is disconnected.') 'Evento sem nome do adaptador'
+    & $check ((ConvertTo-EventSummary 'Intel(R) Ethernet Connection (18) I219-LM' 'Intel(R) Ethernet Connection (18) I219-LM') -eq 'Intel(R) Ethernet Connection (18) I219-LM') 'Evento só com nome'
+    & $check ((ConvertTo-EventSummary '' 'x') -eq '(texto do fabricante indisponível)') 'Evento vazio'
     return $failures
 }
 
@@ -765,7 +777,9 @@ $form.BackColor = [System.Drawing.Color]::FromArgb(241, 245, 249)
 
 $layout = New-Object System.Windows.Forms.TableLayoutPanel
 $layout.Dock = 'Fill'; $layout.Padding = New-Object System.Windows.Forms.Padding(20); $layout.ColumnCount = 1; $layout.RowCount = 7
-foreach ($h in @(46, 28, 38, 86, 44)) { [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, $h))) }
+foreach ($h in @(46, 28, 38)) { [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, $h))) }
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40)))
 [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 28)))
 $form.Controls.Add($layout)
@@ -792,7 +806,7 @@ function New-ActionButton([string]$Text) {
     return $b
 }
 $actions = New-Object System.Windows.Forms.FlowLayoutPanel
-$actions.Dock = 'Fill'; $actions.WrapContents = $true
+$actions.Dock = 'Fill'; $actions.WrapContents = $true; $actions.AutoSize = $true; $actions.AutoSizeMode = 'GrowAndShrink'; $actions.Margin = New-Object System.Windows.Forms.Padding(0, 4, 0, 0)
 $btnRefresh = New-ActionButton 'Atualizar'
 $btnFull = New-ActionButton 'Teste completo'
 $btnIPv4 = New-ActionButton 'IPv4 (10 pacotes)'
