@@ -1,5 +1,14 @@
 # Histórico de versões
 
+## 1.4.0 — em validação (não publicada)
+
+- **Resumo com semáforo** no topo do relatório: [OK], [ATENÇÃO], [FALHA], [INFO] ou [NÃO TESTADO] para link, endereço IPv4, gateway, DNS, internet (informada pelo Windows), estabilidade, 802.1X e switch, com o motivo de cada item.
+- **Estado da autenticação 802.1X** da porta, lido do serviço de autenticação com fio do Windows (`netsh lan`).
+- **Teste de estabilidade (60 s)**: um ping por segundo com origem na Ethernet, perda, latência, jitter, maior sequência sem resposta e erros/descartes do adaptador ocorridos durante o teste.
+- **Levantamento de pontos**: campo de etiqueta do ponto, botão "Registrar ponto" (linha com link, velocidade, IP, gateway, MAC do gateway, DHCP, 802.1X, switch, porta, VLAN, IP e MAC do switch e resultados) e "Exportar levantamento" em CSV (separador ponto e vírgula, abre no Excel). Fica em memória até exportar.
+- O equipamento identificado por LLDP/CDP passa a aparecer no relatório e no levantamento.
+- Proteção contra misturar pontos: quando o link muda, ou ao registrar um ponto, os resultados anteriores saem do resumo.
+
 ## 1.3.0 — em validação (não publicada)
 
 - **Wi-Fi** (botão próprio, seção separada da Ethernet): interface sem fio, SSID, access point conectado (BSSID) com prefixo OUI, canal, faixa, sinal e lista de access points próximos. Usa `netsh wlan`; não exige administrador. No Windows 11 pode exigir os serviços de localização ligados.

@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Diagnóstico RJ45 1.3.0 — diagnóstico do ponto de rede Ethernet conectado (versão PowerShell portátil).
+    Diagnóstico RJ45 1.4.0 — diagnóstico do ponto de rede Ethernet conectado (versão PowerShell portátil).
 
 .DESCRIPTION
     Um único script, sem instalação. Usa somente componentes que já fazem parte do Windows 10/11:
@@ -23,7 +23,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.3.0'
+$script:AppVersion = '1.4.0'
+$script:Results = @{}
 $script:PingExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot 'System32\PING.EXE' } else { 'ping' }
 
 # ---------------------------------------------------------------------------------------------
@@ -383,6 +384,201 @@ function Format-Neighbor($Neighbor) {
 }
 
 # ---------------------------------------------------------------------------------------------
+# Resultados, semáforo, 802.1X e levantamento (interpretação; cobertas por -UnitTest)
+# ---------------------------------------------------------------------------------------------
+
+function Set-TestResult($Adapter, [string]$Key, $Value) {
+    if (-not $Adapter -or -not (Test-HasText $Adapter.Id)) { return }
+    if (-not $script:Results.ContainsKey($Adapter.Id)) { $script:Results[$Adapter.Id] = @{} }
+    $script:Results[$Adapter.Id][$Key] = $Value
+}
+
+function Get-TestResults($Adapter) {
+    if ($Adapter -and (Test-HasText $Adapter.Id) -and $script:Results.ContainsKey($Adapter.Id)) { return $script:Results[$Adapter.Id] }
+    return @{}
+}
+
+function Clear-TestResults($Adapter) {
+    if ($Adapter -and (Test-HasText $Adapter.Id)) { [void]$script:Results.Remove($Adapter.Id) }
+}
+
+# Amostras em ordem: número (ms) para resposta, $null para pacote sem resposta.
+function Get-StabilityStats([object[]]$Samples) {
+    $all = @($Samples)
+    $received = @($all | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    $result = [pscustomobject]@{ Sent = $all.Count; Received = $received.Count; LossPercent = 0.0; Min = $null; Avg = $null; Max = $null; Jitter = $null; LongestOutage = 0 }
+    if ($all.Count -gt 0) { $result.LossPercent = [math]::Round(($all.Count - $received.Count) * 100.0 / $all.Count, 1) }
+    if ($received.Count -gt 0) {
+        $m = $received | Measure-Object -Minimum -Maximum -Average
+        $result.Min = $m.Minimum; $result.Max = $m.Maximum; $result.Avg = [math]::Round($m.Average, 1)
+    }
+    if ($received.Count -gt 1) {
+        $sum = 0.0
+        for ($i = 1; $i -lt $received.Count; $i++) { $sum += [math]::Abs($received[$i] - $received[$i - 1]) }
+        $result.Jitter = [math]::Round($sum / ($received.Count - 1), 1)
+    }
+    $run = 0
+    foreach ($s in $all) {
+        if ($null -eq $s) { $run++; if ($run -gt $result.LongestOutage) { $result.LongestOutage = $run } } else { $run = 0 }
+    }
+    return $result
+}
+
+# Saída de "netsh lan show interfaces" (qualquer idioma). Um bloco por interface cabeada.
+function ConvertFrom-LanInterfaces([string[]]$Lines) {
+    $blocks = @()
+    $current = $null
+    foreach ($p in (ConvertFrom-NetshPairs $Lines)) {
+        if ($p.Key -match '^(Name|Nome|Nombre)$') {
+            $current = [pscustomobject]@{ Name = $p.Value; Pairs = (New-Object System.Collections.ArrayList); State = $null; Status = 'INFO' }
+            $blocks += $current
+        }
+        if (-not $current -or -not (Test-HasText $p.Value)) { continue }
+        [void]$current.Pairs.Add($p)
+        if ($p.Key -match '^(State|Estado)$') { $current.State = $p.Value; $current.Status = Get-Dot1xStatus $p.Value }
+    }
+    return $blocks
+}
+
+function Get-Dot1xStatus([string]$State) {
+    if ($State -match '(?i)succeeded|sucesso|êxito|bem-sucedid') { return 'OK' }
+    if ($State -match '(?i)not support|não (oferece|dá|da) suporte|sem suporte') { return 'NA' }
+    if ($State -match '(?i)fail|falh|negad|denied') { return 'FALHA' }
+    if ($State -match '(?i)authenticating|autenticando|andamento|progress') { return 'ATENÇÃO' }
+    return 'INFO'
+}
+
+function Get-HealthSummary($Adapter, $Results) {
+    $a = $Adapter
+    if ($null -eq $Results) { $Results = @{} }
+    $items = New-Object System.Collections.ArrayList
+    $add = { param($Level, $Item, $Detail) [void]$items.Add([pscustomobject]@{ Level = $Level; Item = $Item; Detail = $Detail }) }
+
+    if ($a.Status -ne 'Up') { & $add 'FALHA' 'Link' 'sem link' }
+    elseif ($a.Speed -gt 0 -and $a.Speed -lt 1e9) { & $add 'ATENÇÃO' 'Link' ((Format-Speed $a.Speed) + ' (abaixo de 1 Gb/s; não comprova defeito)') }
+    else { & $add 'OK' 'Link' (Format-Speed $a.Speed) }
+
+    $v4 = @($a.IPv4 | Where-Object { Test-HasText $_ })
+    if ($a.Status -ne 'Up') { & $add 'NÃO TESTADO' 'Endereço IPv4' 'sem link' }
+    elseif ($v4.Count -eq 0) { & $add 'FALHA' 'Endereço IPv4' 'sem IPv4' }
+    elseif (@($a.IPv4States) -contains 'Duplicate') { & $add 'FALHA' 'Endereço IPv4' 'IPv4 duplicado na rede' }
+    elseif (@($v4 | Where-Object { $_.StartsWith('169.254.') }).Count -eq $v4.Count) { & $add 'FALHA' 'Endereço IPv4' "$($v4[0]) (automático; sem resposta DHCP)" }
+    else { & $add 'OK' 'Endereço IPv4' ("$($v4[0]) (DHCP $($a.Dhcp))") }
+
+    $ipv4 = $Results['IPv4']
+    if (-not $ipv4) {
+        if ($a.Status -eq 'Up' -and @($a.Gateway4).Count -eq 0) { & $add 'ATENÇÃO' 'Gateway' 'sem gateway IPv4 configurado' }
+        else { & $add 'NÃO TESTADO' 'Gateway' 'use IPv4 (10 pacotes) ou Teste completo' }
+    }
+    elseif ($ipv4.Received -eq $ipv4.Sent) { & $add 'OK' 'Gateway' ("$($ipv4.Target): $($ipv4.Received)/$($ipv4.Sent) respostas, média $($ipv4.Avg) ms") }
+    elseif ($ipv4.Received -eq 0) { & $add 'FALHA' 'Gateway' ("$($ipv4.Target): nenhuma resposta (pode ser bloqueio ICMP)") }
+    else { & $add 'ATENÇÃO' 'Gateway' ("$($ipv4.Target): $($ipv4.Received)/$($ipv4.Sent) respostas") }
+
+    $dns = $Results['DNS']
+    if (-not $dns) { & $add 'NÃO TESTADO' 'DNS' 'use DNS ou Teste completo' }
+    elseif ($dns.Ok -gt 0 -and $dns.Failed -eq 0) { & $add 'OK' 'DNS' "$($dns.Ok) servidor(es) responderam" }
+    elseif ($dns.Ok -gt 0) { & $add 'ATENÇÃO' 'DNS' "$($dns.Ok) responderam, $($dns.Failed) falharam" }
+    elseif ($dns.Failed -gt 0) { & $add 'FALHA' 'DNS' "nenhum servidor respondeu ($($dns.Failed) falhas)" }
+    else { & $add 'ATENÇÃO' 'DNS' 'nenhum servidor testado (sem DNS ou rota por outra interface)' }
+
+    switch ("$($a.Connectivity4)") {
+        'Internet' { & $add 'OK' 'Internet (informado pelo Windows)' 'acesso à internet detectado' }
+        { $_ -in @('LocalNetwork', 'Subnet') } { & $add 'ATENÇÃO' 'Internet (informado pelo Windows)' 'somente rede local' }
+        { $_ -in @('NoTraffic', 'Disconnected') } { & $add 'ATENÇÃO' 'Internet (informado pelo Windows)' "sem conectividade ($_)" }
+        default { & $add 'NÃO TESTADO' 'Internet (informado pelo Windows)' 'não informado' }
+    }
+
+    $st = $Results['Stability']
+    if (-not $st) { & $add 'NÃO TESTADO' 'Estabilidade' 'use Estabilidade (60 s)' }
+    else {
+        $detail = "perda $($st.LossPercent)%, jitter $(Format-Value $st.Jitter) ms, maior sequência sem resposta $($st.LongestOutage)"
+        if ($st.Received -eq 0 -or $st.LossPercent -ge 5 -or $st.LongestOutage -ge 3) { & $add 'FALHA' 'Estabilidade' $detail }
+        elseif ($st.LossPercent -gt 0 -or ($null -ne $st.Jitter -and $st.Jitter -gt 30)) { & $add 'ATENÇÃO' 'Estabilidade' $detail }
+        else { & $add 'OK' 'Estabilidade' $detail }
+    }
+
+    if ($a.Dot1x) {
+        switch ($a.Dot1x.Status) {
+            'OK' { & $add 'OK' '802.1X' $a.Dot1x.State }
+            'NA' { & $add 'INFO' '802.1X' "porta sem autenticação 802.1X ($($a.Dot1x.State))" }
+            'FALHA' { & $add 'FALHA' '802.1X' $a.Dot1x.State }
+            'ATENÇÃO' { & $add 'ATENÇÃO' '802.1X' $a.Dot1x.State }
+            default { & $add 'NÃO TESTADO' '802.1X' (Format-Value $a.Dot1x.State) }
+        }
+    } else { & $add 'NÃO TESTADO' '802.1X' (Format-Value $a.Dot1xNote) }
+
+    $sw = $Results['Switch']
+    if (-not $sw) { & $add 'NÃO TESTADO' 'Switch (LLDP/CDP)' 'use Switch (LLDP/CDP), como administrador' }
+    elseif ($sw -eq 'none') { & $add 'ATENÇÃO' 'Switch (LLDP/CDP)' 'nenhum anúncio recebido' }
+    else { & $add 'OK' 'Switch (LLDP/CDP)' (Get-SwitchShort $sw) }
+
+    $overall = 'NÃO TESTADO'
+    if (@($items | Where-Object { $_.Level -eq 'FALHA' }).Count -gt 0) { $overall = 'FALHA' }
+    elseif (@($items | Where-Object { $_.Level -eq 'ATENÇÃO' }).Count -gt 0) { $overall = 'ATENÇÃO' }
+    elseif (@($items | Where-Object { $_.Level -eq 'OK' }).Count -gt 0) { $overall = 'OK' }
+    return [pscustomobject]@{ Overall = $overall; Items = @($items) }
+}
+
+function Get-NeighborValue($Neighbor, [string[]]$Names) {
+    if (-not $Neighbor -or $Neighbor -eq 'none') { return '' }
+    foreach ($n in $Names) {
+        $p = $Neighbor.PSObject.Properties[$n]
+        if ($p -and (Test-HasText $p.Value)) { return "$($p.Value)" }
+    }
+    return ''
+}
+
+function Get-SwitchShort($Neighbor) {
+    $parts = @(
+        (Get-NeighborValue $Neighbor @('Nome do switch', 'ID do chassi')),
+        (Get-NeighborValue $Neighbor @('Porta do switch (ID)', 'Descrição da porta')),
+        ('VLAN ' + (Get-NeighborValue $Neighbor @('VLAN nativa da porta (PVID)', 'VLAN nativa da porta')))
+    ) | Where-Object { (Test-HasText $_) -and $_ -ne 'VLAN ' }
+    return ($parts -join ' / ')
+}
+
+function Format-HealthSummary($Summary) {
+    $lines = @("RESUMO: $($Summary.Overall)")
+    foreach ($i in $Summary.Items) { $lines += ('  {0,-14} {1}: {2}' -f "[$($i.Level)]", $i.Item, $i.Detail) }
+    return $lines
+}
+
+function New-SurveyRow($Adapter, $Results, [string]$Point) {
+    $a = $Adapter
+    if ($null -eq $Results) { $Results = @{} }
+    $summary = Get-HealthSummary $a $Results
+    $ipv4 = $Results['IPv4']; $dns = $Results['DNS']; $st = $Results['Stability']; $sw = $Results['Switch']
+    $dnsText = if ($dns) { "$($dns.Ok) ok / $($dns.Failed) falha" } else { '' }
+    return [pscustomobject][ordered]@{
+        'Data/hora'               = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+        'Ponto'                   = "$Point"
+        'Situação geral'          = $summary.Overall
+        'Link'                    = "$($a.Status)"
+        'Velocidade'              = if ($a.Status -eq 'Up') { Format-Speed $a.Speed } else { '' }
+        'Duplex'                  = "$($a.Duplex)"
+        'IPv4'                    = (@($a.IPv4) -join ', ')
+        'Gateway'                 = (@($a.Gateway4) -join ', ')
+        'MAC do gateway'          = "$($a.GatewayMac)"
+        'Servidor DHCP'           = "$($a.DhcpServer)"
+        'Sufixo DNS'              = "$($a.DnsSuffix)"
+        '802.1X'                  = if ($a.Dot1x) { "$($a.Dot1x.State)" } else { '' }
+        'Switch'                  = (Get-NeighborValue $sw @('Nome do switch', 'ID do chassi'))
+        'Porta do switch'         = (Get-NeighborValue $sw @('Porta do switch (ID)', 'Descrição da porta'))
+        'VLAN'                    = (Get-NeighborValue $sw @('VLAN nativa da porta (PVID)', 'VLAN nativa da porta'))
+        'IP do switch'            = (Get-NeighborValue $sw @('IP de gerência', 'Endereço do switch'))
+        'MAC do anúncio do switch' = (Get-NeighborValue $sw @('MAC de origem do anúncio'))
+        'Gateway: respostas'      = if ($ipv4) { "$($ipv4.Received)/$($ipv4.Sent)" } else { '' }
+        'Latência média (ms)'     = if ($ipv4) { "$($ipv4.Avg)" } else { '' }
+        'DNS'                     = $dnsText
+        'Estabilidade: perda %'   = if ($st) { "$($st.LossPercent)" } else { '' }
+        'Estabilidade: jitter ms' = if ($st) { "$($st.Jitter)" } else { '' }
+        'Internet (Windows)'      = "$($a.Connectivity4)"
+        'Interface'               = "$($a.Name)"
+        'Adaptador'               = "$($a.Description)"
+    }
+}
+
+# ---------------------------------------------------------------------------------------------
 # Inventário (Windows)
 # ---------------------------------------------------------------------------------------------
 
@@ -561,6 +757,8 @@ function Get-AdapterDetail($Nic, $Configs, $WmiNics, $GlobalNotes) {
         RxDiscarded    = if ($stats) { $stats.ReceivedDiscardedPackets } else { $null }
         TxDiscarded    = if ($stats) { $stats.OutboundDiscardedPackets } else { $null }
         Events         = $null
+        Dot1x          = $null
+        Dot1xNote      = $null
         Notes          = $notes
     }
 }
@@ -572,11 +770,23 @@ function Get-EthernetInventory {
     $configs = @(Invoke-Safe { Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration -ErrorAction Stop } $globalNotes 'Dados DHCP (WMI)' | Where-Object { $null -ne $_ })
     $wmiNics = @(Invoke-Safe { Get-CimInstance -ClassName Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' -ErrorAction Stop } $globalNotes 'Serviço do driver (WMI)' | Where-Object { $null -ne $_ })
 
+    $lanBlocks = @()
+    $lanNote = $null
+    try {
+        $lan = Invoke-SystemTool 'netsh.exe' @('lan', 'show', 'interfaces')
+        $lanBlocks = @(ConvertFrom-LanInterfaces $lan.Output)
+        if ($lanBlocks.Count -eq 0) {
+            $lanNote = 'estado indisponível: ' + ((@($lan.Output | Where-Object { Test-HasText $_ }) | Select-Object -First 2) -join ' ')
+        }
+    } catch { $lanNote = "estado indisponível: $($_.Exception.Message)" }
+
     $adapters = @()
     foreach ($nic in $physical) {
         if (-not (Test-IsEthernetMedium $nic)) { continue }
         $detail = Get-AdapterDetail $nic $configs $wmiNics $globalNotes
         $detail.Events = Get-LinkEvents $detail.ServiceName $detail.Description
+        $detail.Dot1x = @($lanBlocks | Where-Object { $_.Name -eq $detail.Name }) | Select-Object -First 1
+        if (-not $detail.Dot1x) { $detail.Dot1xNote = if ($lanNote) { $lanNote } else { 'interface não listada pelo serviço de autenticação com fio' } }
         $adapters += $detail
     }
     return [pscustomobject]@{
@@ -610,6 +820,10 @@ function Format-Report($Adapter, $Inventory) {
     & $add ("Duplex: $($a.Duplex)")
     & $add ("Velocidade/duplex configurado no driver: " + (Format-Value $a.SpeedDuplexCfg))
     & $add ("MAC local: " + (Format-Value $a.Mac))
+    & $add ''
+    foreach ($line in (Format-HealthSummary (Get-HealthSummary $a (Get-TestResults $a)))) { & $add $line }
+    & $add '  O resumo usa apenas o que foi consultado e testado nesta sessão, desde a última mudança de link; não certifica o cabeamento.'
+    & $add ''
     & $add ("Perfil de rede: " + (Format-Value $a.ProfileName) + " | categoria: " + (Format-Value $a.ProfileCategory) + " | conectividade Windows IPv4: " + (Format-Value $a.Connectivity4) + " / IPv6: " + (Format-Value $a.Connectivity6))
 
     & $add ''
@@ -634,6 +848,18 @@ function Format-Report($Adapter, $Inventory) {
     & $add ("DHCP: $($a.Dhcp) | servidor: " + (Format-Value $a.DhcpServer) + " | concessão: " + (Format-Value $a.LeaseStart) + " até " + (Format-Value $a.LeaseEnd))
     $mtuText = if ($a.Mtu4 -gt 0) { "$($a.Mtu4) bytes" } else { 'não disponível' }
     & $add ("MTU IPv4 configurada na interface: $mtuText | métrica da interface: " + (Format-Value $a.Metric4))
+
+    & $add ''
+    & $add 'AUTENTICAÇÃO DA PORTA (802.1X, informada pelo serviço de autenticação com fio do Windows)'
+    if ($a.Dot1x) { foreach ($p in $a.Dot1x.Pairs) { & $add ("  {0}: {1}" -f $p.Key, $p.Value) } }
+    else { & $add ("  " + (Format-Value $a.Dot1xNote)) }
+
+    $sw = (Get-TestResults $a)['Switch']
+    if ($sw -and $sw -ne 'none') {
+        & $add ''
+        & $add 'EQUIPAMENTO NA OUTRA PONTA (anunciado pelo switch via LLDP/CDP nesta sessão)'
+        & $add (Format-Neighbor $sw)
+    }
 
     & $add ''
     & $add (Get-Assessment $a)
@@ -757,6 +983,54 @@ function Invoke-IPv4Test($Adapter, [string]$Target, [scriptblock]$Write, [int]$C
         & $Write ("Latência mín/média/máx: {0} / {1:0.0} / {2} ms (valores abaixo de 1 ms contados como 0)." -f $stats.Minimum, $stats.Average, $stats.Maximum)
     }
     & $Write 'Ausência de resposta pode ser bloqueio ICMP, destino indisponível ou falha de rede; não identifica sozinha defeito no cabo.'
+    $avg = if ($ok -gt 0) { [math]::Round(($latencies | Measure-Object -Average).Average, 1) } else { $null }
+    Set-TestResult $Adapter 'IPv4' ([pscustomobject]@{ Target = $ctx.Target; Sent = $Count; Received = $ok; Avg = $avg })
+}
+
+function Invoke-StabilityTest($Adapter, [string]$Target, [scriptblock]$Write, [int]$Seconds = 60) {
+    $ctx = Get-IPv4TestContext $Adapter $Target
+    Assert-RouteOnAdapter $ctx.Target $ctx.Source $Adapter.Index
+    & $Write ''
+    & $Write "TESTE DE ESTABILIDADE | destino $($ctx.Target) | origem $($ctx.Source) | $Seconds s, 1 pacote por segundo | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $before = Get-NetAdapterStatistics -Name $Adapter.Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    $samples = New-Object System.Collections.ArrayList
+    $routeChanged = $null
+    for ($i = 1; $i -le $Seconds; $i++) {
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        if (($i % 10) -eq 1) {
+            try { Assert-RouteOnAdapter $ctx.Target $ctx.Source $Adapter.Index }
+            catch { $routeChanged = $_.Exception.Message; break }
+        }
+        $r = Invoke-Ping -Target $ctx.Target -Source $ctx.Source
+        if ($r.Kind -eq 'reply') { [void]$samples.Add([int]$r.Latency) } else { [void]$samples.Add($null) }
+        if ($script:Progress) {
+            $lost = @($samples | Where-Object { $null -eq $_ }).Count
+            & $script:Progress "Estabilidade: $i/$Seconds s | sem resposta: $lost"
+        }
+        $remaining = 1000 - [int]$watch.ElapsedMilliseconds
+        while ($remaining -gt 0) {
+            $step = [math]::Min(250, $remaining); Start-Sleep -Milliseconds $step; $remaining -= $step
+            if ($script:Pump) { & $script:Pump }
+        }
+    }
+    $after = Get-NetAdapterStatistics -Name $Adapter.Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    $nowStatus = "$((Get-NetAdapter -Name $Adapter.Name -ErrorAction SilentlyContinue).Status)"
+    $stats = Get-StabilityStats @($samples)
+    if ($routeChanged) { & $Write "Teste interrompido: $routeChanged" }
+    & $Write ("Pacotes: $($stats.Received)/$($stats.Sent) respondidos | perda: $($stats.LossPercent)% | maior sequência sem resposta: $($stats.LongestOutage) pacote(s)")
+    if ($stats.Received -gt 0) {
+        & $Write ("Latência mín/média/máx: $($stats.Min) / $($stats.Avg) / $($stats.Max) ms | jitter (variação média entre respostas): $(Format-Value $stats.Jitter) ms")
+    }
+    if ($before -and $after) {
+        $dRxErr = [int64]$after.ReceivedPacketErrors - [int64]$before.ReceivedPacketErrors
+        $dTxErr = [int64]$after.OutboundPacketErrors - [int64]$before.OutboundPacketErrors
+        $dRxDis = [int64]$after.ReceivedDiscardedPackets - [int64]$before.ReceivedDiscardedPackets
+        $dTxDis = [int64]$after.OutboundDiscardedPackets - [int64]$before.OutboundDiscardedPackets
+        & $Write "Durante o teste: erros RX/TX $dRxErr/$dTxErr | descartes RX/TX $dRxDis/$dTxDis (contadores do adaptador)."
+    }
+    & $Write "Estado do link ao final: $(Format-Value $nowStatus)."
+    & $Write 'Perda isolada pode ser limitação de resposta ICMP do destino; sequências longas sem resposta ou erros crescentes durante o teste merecem investigação.'
+    Set-TestResult $Adapter 'Stability' $stats
 }
 
 function Invoke-DnsTest($Adapter, [string]$Name, [scriptblock]$Write) {
@@ -766,7 +1040,12 @@ function Invoke-DnsTest($Adapter, [string]$Name, [scriptblock]$Write) {
     & $Write "TESTE DNS | nome $Name | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     if ($Adapter.Status -ne 'Up') { throw 'Sem link na Ethernet selecionada.' }
     $servers = @(@($Adapter.Dns4) + @($Adapter.Dns6) | Where-Object { Test-HasText $_ })
-    if ($servers.Count -eq 0) { & $Write 'A Ethernet selecionada não tem servidores DNS configurados; teste não executado.'; return }
+    $dnsOk = 0; $dnsFailed = 0
+    if ($servers.Count -eq 0) {
+        & $Write 'A Ethernet selecionada não tem servidores DNS configurados; teste não executado.'
+        Set-TestResult $Adapter 'DNS' ([pscustomobject]@{ Ok = 0; Failed = 0 })
+        return
+    }
     foreach ($server in $servers) {
         try { Assert-RouteOnAdapter $server $null $Adapter.Index }
         catch { & $Write "DNS ${server}: não testado — $($_.Exception.Message)"; continue }
@@ -777,11 +1056,14 @@ function Invoke-DnsTest($Adapter, [string]$Name, [scriptblock]$Write) {
             $ips = @($answers | Where-Object { "$($_.Type)" -in @('A', 'AAAA') } | ForEach-Object { "$($_.IPAddress)" })
             $result = if ($ips.Count -gt 0) { $ips -join ', ' } else { 'resposta sem endereços A/AAAA' }
             & $Write "DNS ${server}: respondeu em $($watch.ElapsedMilliseconds) ms — $Name -> $result"
+            $dnsOk++
         } catch {
             $watch.Stop()
             & $Write "DNS ${server}: falha após $($watch.ElapsedMilliseconds) ms — $($_.Exception.Message)"
+            $dnsFailed++
         }
     }
+    Set-TestResult $Adapter 'DNS' ([pscustomobject]@{ Ok = $dnsOk; Failed = $dnsFailed })
     & $Write 'A consulta DNS não permite fixar o endereço de origem; por isso cada servidor só é testado quando o Windows confirma que a rota até ele é a Ethernet selecionada.'
 }
 
@@ -1000,9 +1282,11 @@ function Invoke-SwitchDiscovery($Adapter, [scriptblock]$Write, [int]$Seconds = 6
     & $Write "Quadros capturados: $($packets.Count) | anúncios LLDP/CDP distintos: $($neighbors.Count)"
     if ($neighbors.Count -eq 0) {
         & $Write 'Nenhum anúncio recebido. O switch pode não enviar LLDP/CDP nesta porta (comum por política de segurança), ser não gerenciável, ou o intervalo de anúncio ser maior que a captura.'
+        Set-TestResult $Adapter 'Switch' 'none'
         return
     }
     foreach ($n in $neighbors) { & $Write ''; & $Write (Format-Neighbor $n) }
+    Set-TestResult $Adapter 'Switch' $neighbors[0]
     & $Write ''
     & $Write 'Os dados acima foram anunciados pelo próprio switch e não foram verificados de outra forma. Patch panels passivos não aparecem.'
 }
@@ -1114,6 +1398,43 @@ function Invoke-UnitChecks {
     $pk = @(Get-PcapngPackets $pcap)
     & $check ($pk.Count -eq 1 -and ([BitConverter]::ToString($pk[0]) -eq [BitConverter]::ToString($lldp))) 'pcapng leitura'
     & $check (@(Get-PcapngPackets ([byte[]](1..40))).Count -eq 0) 'pcapng inválido'
+
+    # Estabilidade
+    $st = Get-StabilityStats @(2, 4, $null, $null, $null, 3, 5)
+    & $check ($st.Sent -eq 7 -and $st.Received -eq 4 -and $st.LossPercent -eq 42.9 -and $st.LongestOutage -eq 3 -and $st.Jitter -eq 1.7 -and $st.Avg -eq 3.5) 'Estatística de estabilidade'
+    $st0 = Get-StabilityStats @($null, $null)
+    & $check ($st0.Received -eq 0 -and $st0.LossPercent -eq 100 -and $null -eq $st0.Jitter) 'Estabilidade sem respostas'
+
+    # 802.1X (netsh lan)
+    $lanEn = @('There is 1 interface on the system:', '', '    Name             : Ethernet', '    Description      : Intel(R) Ethernet Connection (18) I219-LM',
+        '    Physical Address : aa-bb-cc-dd-ee-ff', '    State            : Connected. Network does not support authentication.')
+    $lb = @(ConvertFrom-LanInterfaces $lanEn)
+    & $check ($lb.Count -eq 1 -and $lb[0].Name -eq 'Ethernet' -and $lb[0].Status -eq 'NA') '802.1X sem suporte (inglês)'
+    & $check ((Get-Dot1xStatus 'Authentication succeeded') -eq 'OK') '802.1X sucesso'
+    & $check ((Get-Dot1xStatus 'Falha na autenticação') -eq 'FALHA') '802.1X falha (português)'
+    & $check ((Get-Dot1xStatus 'Conectado. A rede não oferece suporte para autenticação.') -eq 'NA') '802.1X sem suporte (português)'
+
+    # Semáforo
+    $base = [pscustomobject]@{ Id = 'x'; Name = 'Ethernet'; Description = 'NIC'; Status = 'Up'; Speed = 1e9; IPv4 = @('10.0.0.5'); IPv4States = @('Preferred'); Dhcp = 'habilitado';
+        Gateway4 = @('10.0.0.1'); Connectivity4 = 'Internet'; Dot1x = $lb[0]; Dot1xNote = $null; Duplex = 'full'; GatewayMac = ''; DhcpServer = ''; DnsSuffix = '' }
+    $hs = Get-HealthSummary $base @{}
+    & $check ($hs.Overall -eq 'OK' -and @($hs.Items | Where-Object { $_.Level -eq 'NÃO TESTADO' }).Count -ge 3) 'Semáforo sem testes'
+    $res = @{ IPv4 = [pscustomobject]@{ Target = '10.0.0.1'; Sent = 10; Received = 0; Avg = $null }; DNS = [pscustomobject]@{ Ok = 1; Failed = 0 } }
+    & $check ((Get-HealthSummary $base $res).Overall -eq 'FALHA') 'Semáforo gateway sem resposta'
+    $res2 = @{ Stability = (Get-StabilityStats @(1, 1, 1, $null, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)) }
+    & $check ((Get-HealthSummary $base $res2).Overall -eq 'ATENÇÃO') 'Semáforo perda isolada'
+    $down = [pscustomobject]@{ Id = 'y'; Status = 'Disconnected'; Speed = 0; IPv4 = @(); IPv4States = @(); Gateway4 = @(); Connectivity4 = ''; Dot1x = $null; Dot1xNote = 'x' }
+    & $check ((Get-HealthSummary $down @{}).Overall -eq 'FALHA') 'Semáforo sem link'
+    $apipa = [pscustomobject]@{ Id = 'z'; Status = 'Up'; Speed = 1e9; IPv4 = @('169.254.3.4'); IPv4States = @('Preferred'); Gateway4 = @(); Connectivity4 = 'NoTraffic'; Dot1x = $null; Dot1xNote = 'x' }
+    & $check ((Get-HealthSummary $apipa @{}).Overall -eq 'FALHA') 'Semáforo IPv4 automático'
+
+    # Levantamento com dados do switch
+    $swRes = @{ Switch = (ConvertFrom-LldpFrame $lldp); IPv4 = [pscustomobject]@{ Target = '10.0.0.1'; Sent = 10; Received = 10; Avg = 1.2 } }
+    $row = New-SurveyRow $base $swRes 'Sala 12 - Ponto 03'
+    & $check ($row.'Ponto' -eq 'Sala 12 - Ponto 03' -and $row.'Switch' -eq 'SW-ANDAR2' -and $row.'Porta do switch' -eq 'Gi1/0/12' -and $row.'VLAN' -eq '10' -and $row.'IP do switch' -eq '10.0.0.2' -and $row.'Gateway: respostas' -eq '10/10') 'Linha do levantamento'
+    $csv = @($row | ConvertTo-Csv -NoTypeInformation -Delimiter ';')
+    & $check ($csv.Count -eq 2 -and $csv[0].Contains('"Porta do switch"') -and $csv[1].Contains('"Gi1/0/12"')) 'CSV do levantamento'
+    & $check ((Get-SwitchShort $swRes['Switch']) -eq 'SW-ANDAR2 / Gi1/0/12 / VLAN 10') 'Resumo do switch'
     return $failures
 }
 
@@ -1161,6 +1482,7 @@ $script:Adapters = @()
 $script:Busy = $false
 $script:Suppress = $false
 $script:TestLogs = @{}
+$script:Survey = New-Object System.Collections.ArrayList
 $script:LastId = $null
 $script:LastState = $null
 $script:Transitions = 0
@@ -1177,7 +1499,7 @@ $layout = New-Object System.Windows.Forms.TableLayoutPanel
 $layout.Dock = 'Fill'; $layout.Padding = New-Object System.Windows.Forms.Padding(20); $layout.ColumnCount = 1; $layout.RowCount = 7
 foreach ($h in @(46, 28, 38)) { [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, $h))) }
 [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
-[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 40)))
+[void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
 [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 28)))
 $form.Controls.Add($layout)
@@ -1216,10 +1538,13 @@ $btnWifi = New-ActionButton 'Wi-Fi'
 $btnSwitch = New-ActionButton 'Switch (LLDP/CDP)'
 $btnCopy = New-ActionButton 'Copiar relatório'
 $btnSave = New-ActionButton 'Salvar relatório'
+$btnStability = New-ActionButton 'Estabilidade (60 s)'
+$btnRegister = New-ActionButton 'Registrar ponto'
+$btnExport = New-ActionButton 'Exportar levantamento'
 $monitor = New-Object System.Windows.Forms.CheckBox
 $monitor.Text = 'Acompanhar link (8 s)'; $monitor.AutoSize = $true; $monitor.Margin = New-Object System.Windows.Forms.Padding(8, 6, 0, 0)
-$script:ActionControls = @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnWifi, $btnSwitch, $btnCopy, $btnSave, $combo)
-foreach ($c in @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnWifi, $btnSwitch, $btnCopy, $btnSave, $monitor)) { $actions.Controls.Add($c) }
+$script:ActionControls = @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnStability, $btnWifi, $btnSwitch, $btnRegister, $btnExport, $btnCopy, $btnSave, $combo)
+foreach ($c in @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnStability, $btnWifi, $btnSwitch, $btnRegister, $btnExport, $btnCopy, $btnSave, $monitor)) { $actions.Controls.Add($c) }
 $layout.Controls.Add($actions)
 
 function New-FieldLabel([string]$Text) {
@@ -1228,7 +1553,7 @@ function New-FieldLabel([string]$Text) {
     return $l
 }
 $fields = New-Object System.Windows.Forms.FlowLayoutPanel
-$fields.Dock = 'Fill'
+$fields.Dock = 'Fill'; $fields.AutoSize = $true; $fields.AutoSizeMode = 'GrowAndShrink'
 $txtTarget = New-Object System.Windows.Forms.TextBox; $txtTarget.Width = 200
 $txtDns = New-Object System.Windows.Forms.TextBox; $txtDns.Width = 190; $txtDns.Text = 'www.microsoft.com'
 $txtTrace = New-Object System.Windows.Forms.TextBox; $txtTrace.Width = 140; $txtTrace.Text = '8.8.8.8'
@@ -1238,6 +1563,9 @@ $fields.Controls.Add((New-FieldLabel '   Nome DNS:'))
 $fields.Controls.Add($txtDns)
 $fields.Controls.Add((New-FieldLabel '   Destino da rota:'))
 $fields.Controls.Add($txtTrace)
+$txtPoint = New-Object System.Windows.Forms.TextBox; $txtPoint.Width = 200
+$fields.Controls.Add((New-FieldLabel '   Ponto (etiqueta/local):'))
+$fields.Controls.Add($txtPoint)
 $layout.Controls.Add($fields)
 
 $reportBox = New-Object System.Windows.Forms.TextBox
@@ -1267,12 +1595,24 @@ function Get-TestLog([string]$Id) {
 function Show-SelectedReport {
     $a = Get-SelectedAdapter
     if (-not $a) { return }
-    if ($script:LastId -eq $a.Id -and $null -ne $script:LastState -and $script:LastState -ne $a.Status) { $script:Transitions++ }
+    if ($script:LastId -eq $a.Id -and $null -ne $script:LastState -and $script:LastState -ne $a.Status) {
+        $script:Transitions++
+        if ((Get-TestResults $a).Count -gt 0) {
+            Clear-TestResults $a
+            [void](Get-TestLog $a.Id).AppendLine("`r`n[$(Get-Date -Format 'HH:mm:ss')] Link mudou para $($a.Status): resultados anteriores retirados do resumo (podem ser de outro ponto).")
+        }
+    }
     if ($script:LastId -ne $a.Id) { $script:Transitions = 0 }
     $script:LastId = $a.Id; $script:LastState = $a.Status
     $text = (Format-Report $a $script:Inventory) + "`r`nMudanças de estado observadas pelo aplicativo: $($script:Transitions) (amostragem a cada atualização; eventos entre amostras podem não ser vistos).`r`n"
     $log = (Get-TestLog $a.Id).ToString()
     if ($log.Length -gt 0) { $text += "`r`n===== TESTES DESTA SESSÃO =====`r`n" + $log }
+    if ($script:Survey.Count -gt 0) {
+        $text += "`r`n===== LEVANTAMENTO DESTA SESSÃO: $($script:Survey.Count) ponto(s) =====`r`n"
+        foreach ($row in $script:Survey) {
+            $text += ('{0}  {1,-22} {2,-12} {3,-10} {4}' -f $row.'Data/hora', $row.'Ponto', $row.'Situação geral', $row.'Velocidade', (@($row.'Switch', $row.'Porta do switch', $(if ($row.'VLAN') { 'VLAN ' + $row.'VLAN' })) | Where-Object { $_ }) -join ' / ') + "`r`n"
+        }
+    }
     $reportBox.Text = $text
 }
 
@@ -1367,6 +1707,38 @@ $btnSwitch.Add_Click({
             "Requer o PowerShell aberto como administrador. Cria dois arquivos temporários na pasta TEMP, apagados ao final. Não altera configurações de rede.`r`n`r`nContinuar?"
         $answer = [System.Windows.Forms.MessageBox]::Show($form, $question, 'Identificar switch', 'YesNo', 'Question')
         if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) { Invoke-AdapterTest { param($a) Invoke-SwitchDiscovery $a $script:Writer } }
+    })
+$btnStability.Add_Click({ Invoke-AdapterTest { param($a) Invoke-StabilityTest $a $txtTarget.Text $script:Writer } })
+$btnRegister.Add_Click({
+        Invoke-UiAction 'Registrando o ponto...' {
+            Update-Inventory
+            $a = Get-SelectedAdapter
+            if (-not $a) { throw 'Nenhuma Ethernet selecionada.' }
+            $point = $txtPoint.Text.Trim()
+            if (-not $point) { $point = "Ponto $($script:Survey.Count + 1)" }
+            $row = New-SurveyRow $a (Get-TestResults $a) $point
+            [void]$script:Survey.Add($row)
+            [void](Get-TestLog $a.Id).AppendLine("`r`n[$(Get-Date -Format 'HH:mm:ss')] PONTO REGISTRADO: $point | $($row.'Situação geral') | resultados zerados para o próximo ponto.")
+            Clear-TestResults $a
+            $txtPoint.Text = ''
+            Show-SelectedReport
+            $statusLabel.Text = "Ponto '$point' registrado ($($script:Survey.Count) no levantamento, somente em memória)."
+        }
+    })
+$btnExport.Add_Click({
+        if ($script:Survey.Count -eq 0) { $statusLabel.Text = 'Nenhum ponto registrado ainda. Use "Registrar ponto" após os testes de cada ponto.'; return }
+        $dialog = New-Object System.Windows.Forms.SaveFileDialog
+        $dialog.Filter = 'Planilha CSV (*.csv)|*.csv'
+        $dialog.FileName = 'levantamento-rj45-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.csv'
+        try {
+            if ($dialog.ShowDialog($form) -eq [System.Windows.Forms.DialogResult]::OK) {
+                $csv = @($script:Survey | ConvertTo-Csv -NoTypeInformation -Delimiter ';')
+                [System.IO.File]::WriteAllLines($dialog.FileName, [string[]]$csv, (New-Object System.Text.UTF8Encoding($true)))
+                $statusLabel.Text = "Levantamento com $($script:Survey.Count) ponto(s) salvo em " + $dialog.FileName
+            }
+        } catch {
+            [void][System.Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Não foi possível exportar', 'OK', 'Warning')
+        } finally { $dialog.Dispose() }
     })
 $btnCopy.Add_Click({
         try { [System.Windows.Forms.Clipboard]::SetText($reportBox.Text); $statusLabel.Text = 'Relatório copiado para a área de transferência.' }

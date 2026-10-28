@@ -27,6 +27,11 @@ Estado separado por tipo de evidência. Atualizado em 28/10/2026.
 - **Testado automaticamente (fora do Windows):** sintaxe e 44 verificações, incluindo saídas do `netsh` em inglês e português, quadros LLDP e CDP sintéticos e leitura de arquivo pcapng.
 - **Pendente no equipamento:** botão Wi-Fi (sem administrador) e botão Switch (como administrador, numa porta de switch que envie LLDP ou CDP).
 
+## 1.4.0 — implementada, não validada no equipamento
+
+- **Testado automaticamente (fora do Windows):** sintaxe e 58 verificações, incluindo estatística de estabilidade, estados 802.1X em inglês e português, regras do semáforo e geração do CSV do levantamento.
+- **Pendente no equipamento:** todos os recursos novos.
+
 ## Roteiro de validação no equipamento
 
 1. Abrir o script com o PowerShell padrão, sem administrador; confirmar que a janela abre e a Ethernet é selecionada.
@@ -37,6 +42,9 @@ Estado separado por tipo de evidência. Atualizado em 28/10/2026.
 6. Salvar e copiar relatório; confirmar que nenhum outro arquivo foi criado na pasta do script.
 7. Wi-Fi: conferir SSID, BSSID, canal e sinal com `netsh wlan show interfaces`.
 8. Switch: abrir o PowerShell como administrador, rodar o botão e conferir com a TI o nome do switch, porta e VLAN; confirmar que os arquivos temporários foram apagados.
-9. Repetir em outro computador e em adaptador USB Ethernet.
+9. Estabilidade (60 s) com o cabo firme e, num segundo teste, desconectando por alguns segundos: conferir perda e sequência sem resposta.
+10. Registrar dois pontos diferentes e exportar o levantamento; abrir o CSV no Excel e conferir que os resultados de um ponto não aparecem no outro.
+11. 802.1X: conferir o estado com a TI numa porta com e sem autenticação.
+12. Repetir em outro computador e em adaptador USB Ethernet.
 
 Nenhum desses testes certifica cabeamento.

@@ -1,12 +1,14 @@
 # Diagnóstico RJ45 — versão portátil 1.1.0
 
-## Versão 1.3.0 em PowerShell (em validação)
+## Versão 1.4.0 em PowerShell (em validação)
 
 Copie somente `DiagnosticoRJ45.ps1`. Clique com o botão direito e escolha **Executar com o PowerShell**. A janela preta do PowerShell precisa ficar aberta enquanto o aplicativo é usado. Se o Windows informar que o script não está assinado porque veio da internet, abra as Propriedades do arquivo e marque **Desbloquear**, desde que isso seja permitido pela política da empresa.
 
 Botões: **Atualizar**, **Teste completo**, **IPv4 (10 pacotes)**, **DNS**, **IPv6**, **MTU**, **Rastrear rota**, **Copiar relatório** e **Salvar relatório**. Campo Destino em branco usa o gateway da Ethernet. Todos os testes usam a Ethernet selecionada; o que sairia pelo Wi-Fi é recusado com explicação. O relatório inclui eventos do driver, rotas padrão (Ethernet × Wi-Fi), MAC do gateway, duplex e configuração de velocidade do driver.
 
 **Wi-Fi** mostra o access point conectado (BSSID), canal, sinal e redes próximas, em seção separada. **Switch (LLDP/CDP)** é experimental: exige o PowerShell aberto como administrador, captura por cerca de 65 segundos e mostra nome do switch, porta e VLAN quando o switch envia esses anúncios. Essa função cria dois arquivos temporários na pasta TEMP e os apaga ao final.
+
+**Levantamento de pontos:** digite a etiqueta do ponto, rode os testes, clique em **Registrar ponto** e passe ao próximo. **Exportar levantamento** salva todos os pontos em CSV para o Excel. **Estabilidade (60 s)** mede perda, jitter e quedas por um minuto. O topo do relatório traz um resumo com semáforo e o estado 802.1X da porta.
 
 O PowerShell do Windows pode manter seus próprios caches de sistema; fora a função Switch, o script não cria arquivos.
 

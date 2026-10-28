@@ -2,7 +2,7 @@
 
 Ferramenta de diagnóstico Ethernet para Windows, com perfil inicial para HP EliteBook 640 G11 e Intel I219-LM. Outros computadores usam a enumeração padrão de placas Ethernet físicas do Windows.
 
-## Versão 1.3.0 em PowerShell (em validação)
+## Versão 1.4.0 em PowerShell (em validação)
 
 `DiagnosticoRJ45.ps1` é a mesma ferramenta em um script único, para computadores corporativos em que a regra de reputação de executáveis do Microsoft Defender bloqueia o EXE. Usa apenas componentes do Windows (PowerShell 5.1, módulos de rede, WMI, `ping.exe` e log de eventos), não compila código, não grava arquivos e não pede administrador. Continua sujeita à política de execução de scripts da empresa; o script não tenta contorná-la.
 
