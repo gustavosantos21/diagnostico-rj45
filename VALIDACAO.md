@@ -1,24 +1,28 @@
-# Validação da versão 1.0
+# Validação
 
-## Concluído localmente
+Estado separado por tipo de evidência. Atualizado em 28/10/2026.
 
-- Identificação do HP EliteBook 640 G11 e da Intel I219-LM, driver 20.0.3.21.
-- Compilação inicial e leitura do estado desconectado.
-- Verificações iniciais de interpretação de ausência de link, link de 100 Mb/s e IPv4 automático local.
-- Conferência da estrutura retornada por `Find-NetRoute` usando a rota de loopback.
+## 1.1.0 (EXE)
 
-## Bloqueio local
+- **Testado automaticamente:** compilação e modos `--unit-test` / `--self-test` no GitHub Actions (windows-latest).
+- **Validado no equipamento:** apenas a consulta inicial da versão 1.0 (Intel I219-LM, driver 20.0.3.21, sem cabo).
+- **Bloqueado:** a execução no notebook corporativo foi impedida pelo Microsoft Defender (evento 1121, regra ASR 01443614-CD74-433A-B99E-2ECDC07BFC25, reputação de executáveis). Nenhuma política foi alterada.
 
-A política corporativa do Microsoft Defender Exploit Guard bloqueou a execução recompilada (evento 1121, regra 01443614-CD74-433A-B99E-2ECDC07BFC25). Nenhuma política foi alterada. A execução final local depende de liberação formal pela TI.
+## 1.2.0 (script PowerShell) — implementada, não validada no equipamento
 
-## Pendente antes de considerar a ferramenta homologada
+- **Implementado:** `DiagnosticoRJ45.ps1`, com as funções descritas no CHANGELOG.
+- **Testado automaticamente (fora do Windows):** análise de sintaxe e `-UnitTest` (interpretação de saídas do ping em português e inglês, IPv4/IPv6, máscaras, avaliação do link, MAC virtual) em PowerShell 7 no Linux. A interface gráfica e os comandos de rede do Windows não puderam ser executados nesse ambiente.
+- **Testado automaticamente (Windows):** pendente até o envio ao GitHub; o workflow executa `-UnitTest` e `-SelfTest` em Windows PowerShell 5.1.
+- **Validado no equipamento:** pendente.
 
-- Verificar interface visual, seleção de adaptador e exportação de relatório em execução liberada.
-- Conectar cabo a switch gigabit e confirmar velocidade, IPv4 e gateway.
-- Testar ICMP com destino disponível e indisponível.
-- Manter Wi-Fi ativo e comprovar que rota incompatível interrompe o teste Ethernet.
-- Desconectar e reconectar durante acompanhamento e durante teste.
-- Verificar redes sem gateway e com IPv4 manual.
-- Validar em outro notebook e adaptador USB Ethernet.
+## Roteiro de validação no equipamento
 
-Os testes de integração precisam de rede controlada; a automação no GitHub verifica compilação e interpretação de estados, sem atestar condições elétricas do cabo.
+1. Abrir o script com o PowerShell padrão, sem administrador; confirmar que a janela abre e a Ethernet é selecionada.
+2. Sem cabo: estado SEM LINK. Com cabo: velocidade, IPv4, gateway, DNS e DHCP coerentes com `ipconfig /all`.
+3. IPv4 (10 pacotes), DNS, IPv6, MTU e Rastrear rota, com Wi-Fi desligado.
+4. Repetir com Wi-Fi conectado: os resultados devem continuar sendo da Ethernet, e a seção de rotas deve indicar qual interface é a preferida.
+5. Desconectar e reconectar o cabo com "Acompanhar link" ligado; conferir contagem de mudanças e eventos do driver.
+6. Salvar e copiar relatório; confirmar que nenhum outro arquivo foi criado na pasta do script.
+7. Repetir em outro computador e em adaptador USB Ethernet.
+
+Nenhum desses testes certifica cabeamento.

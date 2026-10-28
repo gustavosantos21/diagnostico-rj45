@@ -45,10 +45,29 @@ jobs:
           }
           $files = @(Get-ChildItem -LiteralPath $portable -Force -Recurse)
           if ($files.Count -ne 1 -or $files[0].Name -ne 'DiagnosticoRJ45.exe') { throw 'Foram criados arquivos auxiliares na pasta portátil' }
+      - name: Verificar script PowerShell (sintaxe, interpretação e loopback)
+        shell: powershell
+        run: |
+          $tokens = $null; $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\DiagnosticoRJ45.ps1), [ref]$tokens, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Error "$($_.Extent.StartLineNumber): $($_.Message)" }; throw 'Erro de sintaxe no script' }
+          $portable = Join-Path $env:RUNNER_TEMP 'RJ45-Script'
+          New-Item -ItemType Directory -Path $portable -Force | Out-Null
+          Copy-Item .\DiagnosticoRJ45.ps1 $portable
+          Push-Location $portable
+          foreach ($mode in @('-UnitTest', '-SelfTest')) {
+            powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\DiagnosticoRJ45.ps1 $mode
+            if ($LASTEXITCODE -ne 0) { throw "Falha no modo $mode" }
+          }
+          Pop-Location
+          $files = @(Get-ChildItem -LiteralPath $portable -Force -Recurse)
+          if ($files.Count -ne 1) { throw 'Foram criados arquivos auxiliares na pasta do script' }
       - uses: actions/upload-artifact@v4
         with:
           name: DiagnosticoRJ45-Portatil
-          path: DiagnosticoRJ45.exe
+          path: |
+            DiagnosticoRJ45.exe
+            DiagnosticoRJ45.ps1
           if-no-files-found: error
 
   release:
@@ -69,5 +88,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$env:RELEASE_TAG" .\dist\DiagnosticoRJ45.exe --verify-tag --title "Diagnóstico RJ45 $env:RELEASE_TAG" --notes-file RELEASE_NOTES.md
+          gh release create "$env:RELEASE_TAG" .\dist\DiagnosticoRJ45.exe .\dist\DiagnosticoRJ45.ps1 --verify-tag --title "Diagnóstico RJ45 $env:RELEASE_TAG" --notes-file RELEASE_NOTES.md
           if ($LASTEXITCODE -ne 0) { throw 'Falha ao publicar a release' }

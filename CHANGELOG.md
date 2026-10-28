@@ -1,5 +1,20 @@
 # Histórico de versões
 
+## 1.2.0 — em validação (não publicada)
+
+- Nova distribuição em script único `DiagnosticoRJ45.ps1` (Windows PowerShell 5.1), para computadores em que a política de reputação de executáveis do Defender bloqueia EXE sem histórico. Não compila código, não grava arquivos e não pede elevação. O EXE 1.1.0 continua no repositório.
+- Seleção automática da Ethernet com link ativo, sem preferência fixa por modelo; adaptadores USB e docks Ethernet são aceitos pelo tipo de mídia 802.3. Wi-Fi, VPN e adaptadores virtuais continuam excluídos.
+- Histórico de eventos do driver no log Sistema (últimos 7 dias), útil para quedas e retornos de link.
+- Teste ativo de DNS em cada servidor da Ethernet, executado somente quando a rota até o servidor é a Ethernet selecionada.
+- Teste ativo IPv6 (gateway de enlace local com escopo fixado na interface, ou destino global com origem explícita).
+- MAC do gateway com prefixo OUI e identificação de MAC virtual HSRP/VRRP/GLBP; contagem de vizinhos IPv4.
+- IPv4 duplicado conforme detecção do Windows.
+- Teste de MTU do caminho com pacotes sem fragmentação.
+- Rastreamento de rota IPv4 com origem na Ethernet.
+- Comparação das rotas padrão ativas (Ethernet × Wi-Fi) e aviso quando o tráfego comum sai por outra interface.
+- Duplex informado pelo driver, velocidade/duplex configurado no driver, perfil de rede e conectividade informada pelo Windows.
+- Resultados de testes acumulados em memória por adaptador durante a sessão; botão para copiar o relatório.
+
 ## 1.1.0 — 2026-10-20
 
 - Consulta direta por .NET/WMI e APIs IP Helper, sem iniciar PowerShell ou ping.

@@ -1,5 +1,13 @@
 # Diagnóstico RJ45 — versão portátil 1.1.0
 
+## Versão 1.2.0 em PowerShell (em validação)
+
+Copie somente `DiagnosticoRJ45.ps1`. Clique com o botão direito e escolha **Executar com o PowerShell**. A janela preta do PowerShell precisa ficar aberta enquanto o aplicativo é usado. Se o Windows informar que o script não está assinado porque veio da internet, abra as Propriedades do arquivo e marque **Desbloquear**, desde que isso seja permitido pela política da empresa.
+
+Botões: **Atualizar**, **Teste completo**, **IPv4 (10 pacotes)**, **DNS**, **IPv6**, **MTU**, **Rastrear rota**, **Copiar relatório** e **Salvar relatório**. Campo Destino em branco usa o gateway da Ethernet. Todos os testes usam a Ethernet selecionada; o que sairia pelo Wi-Fi é recusado com explicação. O relatório inclui eventos do driver, rotas padrão (Ethernet × Wi-Fi), MAC do gateway, duplex e configuração de velocidade do driver.
+
+O PowerShell do Windows pode manter seus próprios caches de sistema; o script não cria arquivos.
+
 Código aberto e uso livre sob a Unlicense, sem cobrança, ativação ou chave de licença. A declaração está no arquivo LICENSE do repositório; ele não precisa acompanhar o EXE para executar a ferramenta. O aplicativo continua sujeito às políticas de segurança do Windows.
 
 É necessário somente o `DiagnosticoRJ45.exe`. Pode ser movido para outra pasta ou pendrive, sem instalação. Não cria configuração, logs, banco de dados ou arquivos temporários próprios. Resultados ficam na memória; use **Salvar relatório** apenas se quiser exportá-los para um local escolhido. Utiliza componentes do Windows descritos abaixo e continua sujeito às políticas corporativas.
