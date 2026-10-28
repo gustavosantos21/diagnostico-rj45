@@ -12,7 +12,7 @@ Estado separado por tipo de evidência. Atualizado em 28/10/2026.
 
 - **Implementado:** `DiagnosticoRJ45.ps1`, com as funções descritas no CHANGELOG.
 - **Testado automaticamente (fora do Windows):** análise de sintaxe e `-UnitTest` (interpretação de saídas do ping em português e inglês, IPv4/IPv6, máscaras, avaliação do link, MAC virtual) em PowerShell 7 no Linux. A interface gráfica e os comandos de rede do Windows não puderam ser executados nesse ambiente.
-- **Testado automaticamente (Windows):** pendente até o envio ao GitHub; o workflow executa `-UnitTest` e `-SelfTest` em Windows PowerShell 5.1.
+- **Testado automaticamente (Windows):** aprovado no GitHub Actions em 28/10/2026 (execução 40750566895, versão 1.4.0, windows-latest, Windows PowerShell 5.1): análise de sintaxe, `-UnitTest`, `-SelfTest` (rota e ICMP de loopback e inventário em texto) e ausência de arquivos auxiliares na pasta do script. A interface gráfica não é exercitada no CI.
 - **Validado no equipamento:** pendente.
 
 ### Primeira execução real (28/10/2026, outro computador com PowerShell liberado)
