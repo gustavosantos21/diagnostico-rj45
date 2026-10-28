@@ -8,12 +8,24 @@ Estado separado por tipo de evidência. Atualizado em 28/10/2026.
 - **Validado no equipamento:** apenas a consulta inicial da versão 1.0 (Intel I219-LM, driver 20.0.3.21, sem cabo).
 - **Bloqueado:** a execução no notebook corporativo foi impedida pelo Microsoft Defender (evento 1121, regra ASR 01443614-CD74-433A-B99E-2ECDC07BFC25, reputação de executáveis). Nenhuma política foi alterada.
 
-## 1.2.0 (script PowerShell) — implementada, não validada no equipamento
+## 1.2.0 (script PowerShell)
 
 - **Implementado:** `DiagnosticoRJ45.ps1`, com as funções descritas no CHANGELOG.
 - **Testado automaticamente (fora do Windows):** análise de sintaxe e `-UnitTest` (interpretação de saídas do ping em português e inglês, IPv4/IPv6, máscaras, avaliação do link, MAC virtual) em PowerShell 7 no Linux. A interface gráfica e os comandos de rede do Windows não puderam ser executados nesse ambiente.
 - **Testado automaticamente (Windows):** pendente até o envio ao GitHub; o workflow executa `-UnitTest` e `-SelfTest` em Windows PowerShell 5.1.
 - **Validado no equipamento:** pendente.
+
+### Primeira execução real (28/10/2026, outro computador com PowerShell liberado)
+
+- **Validado:** a interface abriu; a Intel I219-LM foi listada e selecionada com link ativo; o histórico de eventos do driver foi lido (21 eventos em 7 dias, IDs 27 e 33).
+- **Problema encontrado e corrigido na 1.3.0:** o texto dos eventos mostrava só o nome do adaptador; havia espaço vazio abaixo dos botões.
+- **Não validado ainda:** os demais campos do relatório e os testes ativos.
+- No notebook corporativo, o PowerShell também está bloqueado por política ("Restrictions"); não foi possível executar lá.
+
+## 1.3.0 — implementada, não validada no equipamento
+
+- **Testado automaticamente (fora do Windows):** sintaxe e 44 verificações, incluindo saídas do `netsh` em inglês e português, quadros LLDP e CDP sintéticos e leitura de arquivo pcapng.
+- **Pendente no equipamento:** botão Wi-Fi (sem administrador) e botão Switch (como administrador, numa porta de switch que envie LLDP ou CDP).
 
 ## Roteiro de validação no equipamento
 
@@ -23,6 +35,8 @@ Estado separado por tipo de evidência. Atualizado em 28/10/2026.
 4. Repetir com Wi-Fi conectado: os resultados devem continuar sendo da Ethernet, e a seção de rotas deve indicar qual interface é a preferida.
 5. Desconectar e reconectar o cabo com "Acompanhar link" ligado; conferir contagem de mudanças e eventos do driver.
 6. Salvar e copiar relatório; confirmar que nenhum outro arquivo foi criado na pasta do script.
-7. Repetir em outro computador e em adaptador USB Ethernet.
+7. Wi-Fi: conferir SSID, BSSID, canal e sinal com `netsh wlan show interfaces`.
+8. Switch: abrir o PowerShell como administrador, rodar o botão e conferir com a TI o nome do switch, porta e VLAN; confirmar que os arquivos temporários foram apagados.
+9. Repetir em outro computador e em adaptador USB Ethernet.
 
 Nenhum desses testes certifica cabeamento.

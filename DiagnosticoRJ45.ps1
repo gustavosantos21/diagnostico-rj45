@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    Diagnóstico RJ45 1.2.0 — diagnóstico do ponto de rede Ethernet conectado (versão PowerShell portátil).
+    Diagnóstico RJ45 1.3.0 — diagnóstico do ponto de rede Ethernet conectado (versão PowerShell portátil).
 
 .DESCRIPTION
     Um único script, sem instalação. Usa somente componentes que já fazem parte do Windows 10/11:
@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.2.0'
+$script:AppVersion = '1.3.0'
 $script:PingExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot 'System32\PING.EXE' } else { 'ping' }
 
 # ---------------------------------------------------------------------------------------------
@@ -171,6 +171,215 @@ function Get-Assessment($Adapter) {
         return 'LINK ATIVO A ' + (Format-Speed $Adapter.Speed) + ' — capacidade observada nesta conexão; pode refletir a outra ponta, configuração ou cabeamento. Não comprova defeito.'
     }
     return 'LINK ATIVO — velocidade negociada e configuração disponíveis. Isso não certifica o cabeamento nem comprova comunicação.'
+}
+
+# ---------------------------------------------------------------------------------------------
+# Wi-Fi e LLDP/CDP: interpretação (sem dependência de hardware; cobertas por -UnitTest)
+# ---------------------------------------------------------------------------------------------
+
+function ConvertFrom-NetshPairs([string[]]$Lines) {
+    $pairs = @()
+    foreach ($line in $Lines) {
+        $m = [regex]::Match("$line", '^\s*(?<k>[^:]+?)\s*:\s*(?<v>.*)$')
+        if ($m.Success) { $pairs += [pscustomobject]@{ Key = $m.Groups['k'].Value.Trim(); Value = $m.Groups['v'].Value.Trim() } }
+    }
+    return $pairs
+}
+
+# Saída de "netsh wlan show interfaces" (qualquer idioma). Um bloco por interface sem fio.
+function ConvertFrom-WlanInterfaces([string[]]$Lines) {
+    $blocks = @()
+    $current = $null
+    foreach ($p in (ConvertFrom-NetshPairs $Lines)) {
+        if ($p.Key -match '^(Name|Nome|Nombre)$') {
+            $current = [pscustomobject]@{ Pairs = (New-Object System.Collections.ArrayList); Ssid = $null; Bssid = $null; Signal = $null; Channel = $null }
+            $blocks += $current
+        }
+        if (-not $current -or -not (Test-HasText $p.Value)) { continue }
+        [void]$current.Pairs.Add($p)
+        if ($p.Key -eq 'SSID') { $current.Ssid = $p.Value }
+        elseif ($p.Key -match 'BSSID') { $current.Bssid = $p.Value }
+        elseif ($p.Value -match '^\d{1,3}\s?%$') { $current.Signal = $p.Value }
+        elseif ($p.Key -match '^(Channel|Canal)$') { $current.Channel = $p.Value }
+    }
+    return $blocks
+}
+
+# Saída de "netsh wlan show networks mode=bssid" (qualquer idioma). Um item por BSSID.
+function ConvertFrom-WlanNetworks([string[]]$Lines) {
+    $list = New-Object System.Collections.ArrayList
+    $ssid = ''
+    $current = $null
+    foreach ($p in (ConvertFrom-NetshPairs $Lines)) {
+        if ($p.Key -match '^SSID\s+\d+$') { $ssid = $p.Value; $current = $null; continue }
+        if ($p.Key -match '^BSSID\s+\d+$') {
+            $current = [pscustomobject]@{ Ssid = $ssid; Bssid = $p.Value; Signal = $null; Channel = $null; Band = $null; Radio = $null }
+            [void]$list.Add($current)
+            continue
+        }
+        if (-not $current) { continue }
+        if (-not $current.Signal -and $p.Value -match '^\d{1,3}\s?%$') { $current.Signal = $p.Value }
+        elseif ($p.Key -match '^(Channel|Canal)$') { $current.Channel = $p.Value }
+        elseif ($p.Key -match '^(Band|Banda|Faixa)$') { $current.Band = $p.Value }
+        elseif ($p.Value -match '^802\.11') { $current.Radio = $p.Value }
+    }
+    return @($list)
+}
+
+function Read-UInt16BE([byte[]]$Bytes, [int]$Offset) {
+    return (([int]$Bytes[$Offset] -shl 8) -bor [int]$Bytes[$Offset + 1])
+}
+
+function Format-MacBytes([byte[]]$Bytes, [int]$Offset) {
+    return ((0..5 | ForEach-Object { '{0:X2}' -f $Bytes[$Offset + $_] }) -join '-')
+}
+
+function Get-FrameText([byte[]]$Bytes, [int]$Offset, [int]$Length, [int]$Max = 200) {
+    if ($Length -le 0 -or ($Offset + $Length) -gt $Bytes.Length) { return '' }
+    $text = [System.Text.Encoding]::UTF8.GetString($Bytes, $Offset, $Length)
+    $text = (($text -replace '[\x00-\x1F\x7F]+', ' ').Trim())
+    if ($text.Length -gt $Max) { $text = $text.Substring(0, $Max - 3) + '...' }
+    return $text
+}
+
+function Add-NeighborField($Record, [string]$Name, [string]$Value) {
+    if (-not (Test-HasText $Value)) { return }
+    if ($Record.Contains($Name)) { $Record[$Name] = "$($Record[$Name]); $Value" } else { $Record[$Name] = $Value }
+}
+
+# Decodifica um quadro Ethernet LLDP (EtherType 0x88CC). Retorna $null se não for LLDP.
+function ConvertFrom-LldpFrame([byte[]]$Frame) {
+    if ($null -eq $Frame -or $Frame.Length -lt 16) { return $null }
+    $o = 12
+    $etherType = Read-UInt16BE $Frame $o
+    if ($etherType -eq 0x8100 -and $Frame.Length -ge 20) { $o += 4; $etherType = Read-UInt16BE $Frame $o }
+    if ($etherType -ne 0x88CC) { return $null }
+    $o += 2
+    $r = [ordered]@{ 'Protocolo' = 'LLDP'; 'MAC de origem do anúncio' = (Format-MacBytes $Frame 6) }
+    while (($o + 2) -le $Frame.Length) {
+        $header = Read-UInt16BE $Frame $o
+        $type = $header -shr 9
+        $len = $header -band 0x1FF
+        $v = $o + 2
+        if ($type -eq 0 -or ($v + $len) -gt $Frame.Length) { break }
+        switch ($type) {
+            1 {
+                $sub = $Frame[$v]
+                if ($sub -eq 4 -and $len -ge 7) { Add-NeighborField $r 'ID do chassi' (Format-MacBytes $Frame ($v + 1)) }
+                elseif ($sub -eq 5 -and $len -ge 6 -and $Frame[$v + 1] -eq 1) { Add-NeighborField $r 'ID do chassi' ($Frame[($v + 2)..($v + 5)] -join '.') }
+                else { Add-NeighborField $r 'ID do chassi' (Get-FrameText $Frame ($v + 1) ($len - 1)) }
+            }
+            2 {
+                $sub = $Frame[$v]
+                if ($sub -eq 3 -and $len -ge 7) { Add-NeighborField $r 'Porta do switch (ID)' (Format-MacBytes $Frame ($v + 1)) }
+                else { Add-NeighborField $r 'Porta do switch (ID)' (Get-FrameText $Frame ($v + 1) ($len - 1)) }
+            }
+            4 { Add-NeighborField $r 'Descrição da porta' (Get-FrameText $Frame $v $len) }
+            5 { Add-NeighborField $r 'Nome do switch' (Get-FrameText $Frame $v $len) }
+            6 { Add-NeighborField $r 'Descrição do sistema' (Get-FrameText $Frame $v $len) }
+            8 {
+                if ($len -ge 6 -and $Frame[$v] -eq 5 -and $Frame[$v + 1] -eq 1) { Add-NeighborField $r 'IP de gerência' ($Frame[($v + 2)..($v + 5)] -join '.') }
+            }
+            127 {
+                if ($len -ge 4) {
+                    $oui = '{0:X2}-{1:X2}-{2:X2}' -f $Frame[$v], $Frame[$v + 1], $Frame[$v + 2]
+                    $sub = $Frame[$v + 3]
+                    if ($oui -eq '00-80-C2' -and $sub -eq 1 -and $len -ge 6) {
+                        Add-NeighborField $r 'VLAN nativa da porta (PVID)' ("$(Read-UInt16BE $Frame ($v + 4))")
+                    } elseif ($oui -eq '00-80-C2' -and $sub -eq 3 -and $len -ge 7) {
+                        $vid = Read-UInt16BE $Frame ($v + 4)
+                        $nameLength = [int]$Frame[$v + 6]
+                        Add-NeighborField $r 'VLAN anunciada' ("$vid " + (Get-FrameText $Frame ($v + 7) $nameLength)).Trim()
+                    } elseif ($oui -eq '00-12-BB' -and $sub -eq 2 -and $len -ge 8) {
+                        $app = [int]$Frame[$v + 4]
+                        $vlan = ((([int]$Frame[$v + 5]) -band 0x1F) -shl 7) -bor (([int]$Frame[$v + 6]) -shr 1)
+                        $label = if ($app -eq 1) { 'voz' } elseif ($app -eq 2) { 'sinalização de voz' } else { "aplicação $app" }
+                        Add-NeighborField $r 'Política de rede LLDP-MED' "$label na VLAN $vlan"
+                    } elseif ($oui -eq '00-12-0F' -and $sub -eq 2) {
+                        Add-NeighborField $r 'PoE' 'o switch anuncia alimentação PoE nesta porta (detalhes não decodificados; não é medição)'
+                    }
+                }
+            }
+        }
+        $o = $v + $len
+    }
+    return [pscustomobject]$r
+}
+
+# Decodifica um quadro CDP (Cisco). Retorna $null se não for CDP.
+function ConvertFrom-CdpFrame([byte[]]$Frame) {
+    if ($null -eq $Frame -or $Frame.Length -lt 26) { return $null }
+    if ((Format-MacBytes $Frame 0) -ne '01-00-0C-CC-CC-CC') { return $null }
+    $o = 14
+    if ((Read-UInt16BE $Frame 12) -eq 0x8100) { $o = 18 }
+    if (($o + 12) -gt $Frame.Length) { return $null }
+    if ($Frame[$o] -ne 0xAA -or $Frame[$o + 1] -ne 0xAA -or $Frame[$o + 2] -ne 3) { return $null }
+    if ((Read-UInt16BE $Frame ($o + 6)) -ne 0x2000) { return $null }
+    $o += 12
+    $r = [ordered]@{ 'Protocolo' = 'CDP'; 'MAC de origem do anúncio' = (Format-MacBytes $Frame 6) }
+    while (($o + 4) -le $Frame.Length) {
+        $type = Read-UInt16BE $Frame $o
+        $len = Read-UInt16BE $Frame ($o + 2)
+        if ($len -lt 4 -or ($o + $len) -gt $Frame.Length) { break }
+        $v = $o + 4
+        $dataLength = $len - 4
+        switch ($type) {
+            1 { Add-NeighborField $r 'Nome do switch' (Get-FrameText $Frame $v $dataLength) }
+            3 { Add-NeighborField $r 'Porta do switch (ID)' (Get-FrameText $Frame $v $dataLength) }
+            5 { Add-NeighborField $r 'Software' (Get-FrameText $Frame $v $dataLength 160) }
+            6 { Add-NeighborField $r 'Plataforma' (Get-FrameText $Frame $v $dataLength) }
+            10 { if ($dataLength -ge 2) { Add-NeighborField $r 'VLAN nativa da porta' ("$(Read-UInt16BE $Frame $v)") } }
+            11 { if ($dataLength -ge 1) { Add-NeighborField $r 'Duplex informado pelo switch' $(if ($Frame[$v] -eq 1) { 'full-duplex' } else { 'half-duplex' }) } }
+            14 { if ($dataLength -ge 3) { Add-NeighborField $r 'VLAN de voz' ("$(Read-UInt16BE $Frame ($v + 1))") } }
+            { $_ -eq 2 -or $_ -eq 22 } {
+                if ($dataLength -ge 4) {
+                    $p = $v + 4
+                    $end = $v + $dataLength
+                    while (($p + 2) -le $end) {
+                        $pType = [int]$Frame[$p]; $pLen = [int]$Frame[$p + 1]
+                        if (($p + 2 + $pLen + 2) -gt $end) { break }
+                        $aLen = Read-UInt16BE $Frame ($p + 2 + $pLen)
+                        $a = $p + 4 + $pLen
+                        if (($a + $aLen) -gt $end) { break }
+                        if ($pType -eq 1 -and $pLen -eq 1 -and $Frame[$p + 2] -eq 0xCC -and $aLen -eq 4) {
+                            $field = if ($type -eq 22) { 'IP de gerência' } else { 'Endereço do switch' }
+                            Add-NeighborField $r $field ($Frame[$a..($a + 3)] -join '.')
+                        }
+                        $p = $a + $aLen
+                    }
+                }
+            }
+        }
+        $o += $len
+    }
+    return [pscustomobject]$r
+}
+
+# Extrai os quadros de um arquivo pcapng (blocos Enhanced Packet, little-endian).
+function Get-PcapngPackets([byte[]]$Data) {
+    $packets = New-Object System.Collections.ArrayList
+    if ($null -eq $Data -or $Data.Length -lt 28) { return $packets }
+    if ([BitConverter]::ToUInt32($Data, 0) -ne 0x0A0D0D0A -or [BitConverter]::ToUInt32($Data, 8) -ne 0x1A2B3C4D) { return $packets }
+    $o = 0
+    while (($o + 12) -le $Data.Length) {
+        $type = [BitConverter]::ToUInt32($Data, $o)
+        $len = [int][BitConverter]::ToUInt32($Data, $o + 4)
+        if ($len -lt 12 -or ($o + $len) -gt $Data.Length) { break }
+        if ($type -eq 6 -and $len -ge 32) {
+            $captured = [int][BitConverter]::ToUInt32($Data, $o + 20)
+            if ($captured -gt 0 -and ($o + 28 + $captured) -le $Data.Length) {
+                $packet = New-Object byte[] $captured
+                [Array]::Copy($Data, $o + 28, $packet, 0, $captured)
+                [void]$packets.Add($packet)
+            }
+        }
+        $o += $len
+    }
+    return $packets
+}
+
+function Format-Neighbor($Neighbor) {
+    return (@($Neighbor.PSObject.Properties | ForEach-Object { "  $($_.Name): $($_.Value)" }) -join "`r`n")
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -472,7 +681,8 @@ function Format-Report($Adapter, $Inventory) {
     & $add ''
     & $add 'RECURSOS NÃO DISPONÍVEIS NESTA VERSÃO'
     & $add 'Mapa dos 8 fios, comprimento, distância até falhas, PoE, interferência e certificação Cat5e/Cat6/Cat6A.'
-    & $add 'Identificação do switch, porta e VLAN (LLDP/CDP) não implementada.'
+    & $add 'Switch, porta e VLAN: use o botão "Switch (LLDP/CDP)" (experimental; requer administrador e depende de o switch enviar anúncios).'
+    & $add 'Informações de Wi-Fi: use o botão "Wi-Fi"; ficam em seção separada e não fazem parte do diagnóstico da Ethernet.'
     & $add 'Velocidade negociada não é velocidade real de transferência.'
     return $sb.ToString()
 }
@@ -662,6 +872,142 @@ function Invoke-RouteTrace($Adapter, [string]$Target, [scriptblock]$Write, [int]
 }
 
 # ---------------------------------------------------------------------------------------------
+# Wi-Fi e identificação do switch (Windows)
+# ---------------------------------------------------------------------------------------------
+
+function Invoke-SystemTool([string]$Exe, [string[]]$Arguments) {
+    $path = Join-Path $env:SystemRoot "System32\$Exe"
+    if (-not (Test-Path -LiteralPath $path)) { throw "$Exe não está disponível neste Windows." }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = @(& $path @Arguments 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $previous }
+    return [pscustomobject]@{ Code = $code; Output = $output }
+}
+
+function Invoke-WifiReport([scriptblock]$Write) {
+    & $Write ''
+    & $Write "WI-FI — conexão sem fio, separada do diagnóstico da Ethernet | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $interfaces = Invoke-SystemTool 'netsh.exe' @('wlan', 'show', 'interfaces')
+    $blocks = @(ConvertFrom-WlanInterfaces $interfaces.Output)
+    $connected = @()
+    if ($blocks.Count -eq 0) {
+        & $Write 'O Windows não retornou interfaces Wi-Fi. Mensagem do sistema:'
+        foreach ($line in @($interfaces.Output | Where-Object { Test-HasText $_ } | Select-Object -First 6)) { & $Write "  $($line.Trim())" }
+    }
+    foreach ($b in $blocks) {
+        & $Write ''
+        foreach ($p in $b.Pairs) { & $Write ("  {0}: {1}" -f $p.Key, $p.Value) }
+        if (Test-HasText $b.Bssid) {
+            $connected += $b.Bssid
+            & $Write ("  Access point conectado (BSSID): $($b.Bssid) — " + (Get-MacInfo $b.Bssid))
+            & $Write '  O BSSID identifica o rádio do access point; nome e local físico dependem do inventário da TI ou da controladora Wi-Fi.'
+        } else {
+            & $Write '  Esta interface não informou access point conectado.'
+        }
+    }
+    $networks = Invoke-SystemTool 'netsh.exe' @('wlan', 'show', 'networks', 'mode=bssid')
+    $aps = @(ConvertFrom-WlanNetworks $networks.Output | Sort-Object { $n = ("$($_.Signal)" -replace '\D', ''); if ($n) { - [int]$n } else { 0 } })
+    & $Write ''
+    if ($aps.Count -eq 0) {
+        & $Write 'Access points próximos: nenhum retornado. No Windows 11, essa consulta pode exigir os serviços de localização ligados. Mensagem do sistema:'
+        foreach ($line in @($networks.Output | Where-Object { Test-HasText $_ } | Select-Object -First 4)) { & $Write "  $($line.Trim())" }
+    } else {
+        & $Write "Access points próximos: $($aps.Count) (exibindo até 30, do maior para o menor sinal)"
+        & $Write ('  {0,-28} {1,-18} {2,6} {3,6}  {4}' -f 'SSID', 'BSSID', 'Sinal', 'Canal', 'Faixa / padrão')
+        foreach ($ap in @($aps | Select-Object -First 30)) {
+            $ssid = if (Test-HasText $ap.Ssid) { $ap.Ssid } else { '(rede oculta)' }
+            if ($ssid.Length -gt 28) { $ssid = $ssid.Substring(0, 25) + '...' }
+            $mark = if ($connected -contains $ap.Bssid) { '  <- conectado' } else { '' }
+            $band = (@($ap.Band, $ap.Radio) | Where-Object { Test-HasText $_ }) -join ' / '
+            & $Write ('  {0,-28} {1,-18} {2,6} {3,6}  {4}{5}' -f $ssid, $ap.Bssid, $ap.Signal, $ap.Channel, $band, $mark)
+        }
+    }
+    & $Write 'Sinal em % é o valor informado pelo Windows, não uma medição calibrada.'
+}
+
+function Test-IsAdministrator {
+    try {
+        $principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+function Get-PktmonComponentId([string]$Mac) {
+    $hex = ("$Mac" -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+    if ($hex.Length -ne 12) { return $null }
+    foreach ($arguments in @(@('list'), @('comp', 'list'))) {
+        try { $result = Invoke-SystemTool 'pktmon.exe' $arguments } catch { return $null }
+        foreach ($line in $result.Output) {
+            $m = [regex]::Match($line, '^\s*(\d+)\s+(.+)$')
+            if ($m.Success -and (($m.Groups[2].Value -replace '[^0-9A-Fa-f]', '').ToUpperInvariant().Contains($hex))) { return $m.Groups[1].Value }
+        }
+    }
+    return $null
+}
+
+# Captura anúncios LLDP/CDP com o pktmon do Windows. Exige administrador.
+# Cria um arquivo .etl e um .pcapng temporários na pasta TEMP e apaga ambos ao final.
+function Invoke-SwitchDiscovery($Adapter, [scriptblock]$Write, [int]$Seconds = 65) {
+    & $Write ''
+    & $Write "IDENTIFICAÇÃO DO SWITCH (LLDP/CDP, experimental) | $($Adapter.Name) | captura de $Seconds s | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    if ($Adapter.Status -ne 'Up') { throw 'Sem link na Ethernet selecionada.' }
+    if (-not (Test-IsAdministrator)) { throw 'Esta função usa o capturador do Windows (pktmon) e exige o PowerShell aberto como administrador. Nenhuma captura foi feita.' }
+    $pktmon = Join-Path $env:SystemRoot 'System32\pktmon.exe'
+    if (-not (Test-Path -LiteralPath $pktmon)) { throw 'pktmon não existe neste Windows (requer Windows 10 versão 2004 ou posterior).' }
+
+    $component = Get-PktmonComponentId $Adapter.Mac
+    $id = [guid]::NewGuid().ToString('N')
+    $etl = Join-Path $env:TEMP "rj45-$id.etl"
+    $pcap = Join-Path $env:TEMP "rj45-$id.pcapng"
+    $arguments = @('start', '--capture', '--pkt-size', '0', '--file-name', $etl, '--file-size', '64')
+    if ($component) { $arguments += @('--comp', $component) }
+    else { & $Write 'Aviso: não foi possível restringir a captura à Ethernet; todas as interfaces serão capturadas. Para garantir que o resultado é da Ethernet, desconecte o Wi-Fi e repita.' }
+
+    $started = $false
+    try {
+        $start = Invoke-SystemTool 'pktmon.exe' $arguments
+        if ($start.Code -ne 0) { throw ('O pktmon não iniciou (pode já haver uma captura em andamento; nada foi alterado): ' + (($start.Output | Where-Object { Test-HasText $_ }) -join ' ')) }
+        $started = $true
+        for ($elapsed = 0; $elapsed -lt $Seconds; $elapsed++) {
+            if ($script:Progress) { & $script:Progress "Aguardando anúncios do switch... $($Seconds - $elapsed) s" }
+            for ($q = 0; $q -lt 4; $q++) { Start-Sleep -Milliseconds 250; if ($script:Pump) { & $script:Pump } }
+        }
+    } finally {
+        if ($started) { [void](Invoke-SystemTool 'pktmon.exe' @('stop')) }
+    }
+    try {
+        $convert = Invoke-SystemTool 'pktmon.exe' @('pcapng', $etl, '-o', $pcap)
+        if (-not (Test-Path -LiteralPath $pcap)) { throw ('Não foi possível converter a captura: ' + (($convert.Output | Where-Object { Test-HasText $_ }) -join ' ')) }
+        $packets = @(Get-PcapngPackets ([System.IO.File]::ReadAllBytes($pcap)))
+    } finally {
+        Remove-Item -LiteralPath $etl, $pcap -Force -ErrorAction SilentlyContinue
+    }
+
+    $seen = @{}
+    $neighbors = @()
+    foreach ($packet in $packets) {
+        $n = ConvertFrom-LldpFrame $packet
+        if (-not $n) { $n = ConvertFrom-CdpFrame $packet }
+        if (-not $n) { continue }
+        $key = Format-Neighbor $n
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $neighbors += $n
+    }
+    & $Write "Quadros capturados: $($packets.Count) | anúncios LLDP/CDP distintos: $($neighbors.Count)"
+    if ($neighbors.Count -eq 0) {
+        & $Write 'Nenhum anúncio recebido. O switch pode não enviar LLDP/CDP nesta porta (comum por política de segurança), ser não gerenciável, ou o intervalo de anúncio ser maior que a captura.'
+        return
+    }
+    foreach ($n in $neighbors) { & $Write ''; & $Write (Format-Neighbor $n) }
+    & $Write ''
+    & $Write 'Os dados acima foram anunciados pelo próprio switch e não foram verificados de outra forma. Patch panels passivos não aparecem.'
+}
+
+# ---------------------------------------------------------------------------------------------
 # Verificações
 # ---------------------------------------------------------------------------------------------
 
@@ -716,6 +1062,58 @@ function Invoke-UnitChecks {
     & $check ((ConvertTo-EventSummary "Intel(R) Ethernet Connection (18) I219-LM`r`n Network link is disconnected." 'Intel(R) Ethernet Connection (18) I219-LM') -eq 'Network link is disconnected.') 'Evento sem nome do adaptador'
     & $check ((ConvertTo-EventSummary 'Intel(R) Ethernet Connection (18) I219-LM' 'Intel(R) Ethernet Connection (18) I219-LM') -eq 'Intel(R) Ethernet Connection (18) I219-LM') 'Evento só com nome'
     & $check ((ConvertTo-EventSummary '' 'x') -eq '(texto do fabricante indisponível)') 'Evento vazio'
+
+    # Wi-Fi (saídas do netsh em inglês e português)
+    $wlanEn = @('There is 1 interface on the system:', '', '    Name                   : Wi-Fi', '    Description            : Intel(R) Wi-Fi 6E AX211 160MHz',
+        '    Physical address       : aa:bb:cc:dd:ee:ff', '    State                  : connected', '    SSID                   : Empresa',
+        '    AP BSSID               : 00:11:22:33:44:55', '    Band                   : 5 GHz', '    Channel                : 36', '    Signal                 : 87%')
+    $w = @(ConvertFrom-WlanInterfaces $wlanEn)
+    & $check ($w.Count -eq 1 -and $w[0].Ssid -eq 'Empresa' -and $w[0].Bssid -eq '00:11:22:33:44:55' -and $w[0].Signal -eq '87%' -and $w[0].Channel -eq '36') 'Wi-Fi interface inglês'
+    $wlanPt = @('    Nome                   : Wi-Fi', '    Endereço físico        : aa:bb:cc:dd:ee:ff', '    SSID                   : Empresa', '    BSSID do AP            : 00:11:22:33:44:55', '    Canal                  : 11', '    Sinal                  : 60%')
+    $w = @(ConvertFrom-WlanInterfaces $wlanPt)
+    & $check ($w.Count -eq 1 -and $w[0].Bssid -eq '00:11:22:33:44:55' -and $w[0].Channel -eq '11' -and $w[0].Signal -eq '60%') 'Wi-Fi interface português'
+    $nets = @('SSID 1 : Empresa', '    Authentication          : WPA2-Enterprise', '    BSSID 1                 : 00:11:22:33:44:55', '         Signal             : 87%',
+        '         Radio type         : 802.11ax', '         Band               : 5 GHz', '         Channel            : 36', '    BSSID 2                 : 00:11:22:33:44:66',
+        '         Signal             : 40%', 'SSID 2 :', '    BSSID 1                 : 02:00:00:00:00:01', '         Sinal              : 20%', '         Canal              : 6')
+    $n = @(ConvertFrom-WlanNetworks $nets)
+    & $check ($n.Count -eq 3 -and $n[0].Channel -eq '36' -and $n[0].Radio -eq '802.11ax' -and $n[1].Signal -eq '40%' -and $n[2].Ssid -eq '' -and $n[2].Channel -eq '6') 'Wi-Fi redes próximas'
+
+    # LLDP sintético: chassi MAC, porta Gi1/0/12, nome SW-ANDAR2, PVID 10, VLAN de voz 20 (LLDP-MED), IP de gerência
+    $tlv = { param([int]$Type, [byte[]]$Value) $h = ($Type -shl 9) -bor $Value.Length; [byte[]](@([byte]($h -shr 8), [byte]($h -band 0xFF)) + $Value) }
+    $ascii = { param([string]$Text) [byte[]][System.Text.Encoding]::ASCII.GetBytes($Text) }
+    $lldp = [byte[]](@(0x01, 0x80, 0xC2, 0x00, 0x00, 0x0E, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x88, 0xCC) +
+        (& $tlv 1 ([byte[]](@(4, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55)))) +
+        (& $tlv 2 ([byte[]](@(5) + (& $ascii 'Gi1/0/12')))) +
+        (& $tlv 3 ([byte[]](@(0, 120)))) +
+        (& $tlv 5 (& $ascii 'SW-ANDAR2')) +
+        (& $tlv 8 ([byte[]](@(5, 1, 10, 0, 0, 2, 2, 0, 0, 0, 0, 0)))) +
+        (& $tlv 127 ([byte[]](@(0x00, 0x80, 0xC2, 1, 0x00, 0x0A)))) +
+        (& $tlv 127 ([byte[]](@(0x00, 0x12, 0xBB, 2, 1, 0x40, 0x28, 0x00)))) +
+        @(0, 0))
+    $l = ConvertFrom-LldpFrame $lldp
+    & $check ($null -ne $l -and $l.'Nome do switch' -eq 'SW-ANDAR2' -and $l.'Porta do switch (ID)' -eq 'Gi1/0/12' -and $l.'ID do chassi' -eq '00-11-22-33-44-55') 'LLDP nome, porta e chassi'
+    & $check ($null -ne $l -and $l.'VLAN nativa da porta (PVID)' -eq '10' -and $l.'Política de rede LLDP-MED' -eq 'voz na VLAN 20' -and $l.'IP de gerência' -eq '10.0.0.2') 'LLDP VLANs e gerência'
+    & $check ($null -eq (ConvertFrom-CdpFrame $lldp)) 'LLDP não é CDP'
+
+    # CDP sintético: SW-CORE, porta GigabitEthernet0/5, VLAN nativa 10, endereço 10.0.0.3
+    $cdpTlv = { param([int]$Type, [byte[]]$Value) $len = $Value.Length + 4; [byte[]](@([byte]($Type -shr 8), [byte]($Type -band 0xFF), [byte]($len -shr 8), [byte]($len -band 0xFF)) + $Value) }
+    $cdpBody = [byte[]]((& $cdpTlv 1 (& $ascii 'SW-CORE')) + (& $cdpTlv 3 (& $ascii 'GigabitEthernet0/5')) + (& $cdpTlv 10 ([byte[]](@(0, 10)))) +
+        (& $cdpTlv 2 ([byte[]](@(0, 0, 0, 1, 1, 1, 0xCC, 0, 4, 10, 0, 0, 3)))))
+    $cdp = [byte[]](@(0x01, 0x00, 0x0C, 0xCC, 0xCC, 0xCC, 0x00, 0x11, 0x22, 0x33, 0x44, 0x66, 0x00, 0x00, 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x0C, 0x20, 0x00, 0x02, 0xB4, 0x00, 0x00) + $cdpBody)
+    $c = ConvertFrom-CdpFrame $cdp
+    & $check ($null -ne $c -and $c.'Nome do switch' -eq 'SW-CORE' -and $c.'Porta do switch (ID)' -eq 'GigabitEthernet0/5' -and $c.'VLAN nativa da porta' -eq '10' -and $c.'Endereço do switch' -eq '10.0.0.3') 'CDP campos'
+    & $check ($null -eq (ConvertFrom-LldpFrame $cdp)) 'CDP não é LLDP'
+
+    # pcapng mínimo: cabeçalho de seção, interface e um pacote (o quadro LLDP acima)
+    $u32 = { param([uint32]$Value) [BitConverter]::GetBytes($Value) }
+    $pad = (4 - ($lldp.Length % 4)) % 4
+    $epbLength = [uint32](32 + $lldp.Length + $pad)
+    $pcap = [byte[]]((& $u32 0x0A0D0D0A) + (& $u32 28) + (& $u32 0x1A2B3C4D) + @(1, 0, 0, 0) + @(0xFF) * 8 + (& $u32 28) +
+        (& $u32 1) + (& $u32 20) + @(1, 0, 0, 0) + (& $u32 0) + (& $u32 20) +
+        (& $u32 6) + (& $u32 $epbLength) + (& $u32 0) + (& $u32 0) + (& $u32 0) + (& $u32 ([uint32]$lldp.Length)) + (& $u32 ([uint32]$lldp.Length)) + $lldp + @([byte]0) * $pad + (& $u32 $epbLength))
+    $pk = @(Get-PcapngPackets $pcap)
+    & $check ($pk.Count -eq 1 -and ([BitConverter]::ToString($pk[0]) -eq [BitConverter]::ToString($lldp))) 'pcapng leitura'
+    & $check (@(Get-PcapngPackets ([byte[]](1..40))).Count -eq 0) 'pcapng inválido'
     return $failures
 }
 
@@ -814,12 +1212,14 @@ $btnDns = New-ActionButton 'DNS'
 $btnIPv6 = New-ActionButton 'IPv6'
 $btnMtu = New-ActionButton 'MTU'
 $btnTrace = New-ActionButton 'Rastrear rota'
+$btnWifi = New-ActionButton 'Wi-Fi'
+$btnSwitch = New-ActionButton 'Switch (LLDP/CDP)'
 $btnCopy = New-ActionButton 'Copiar relatório'
 $btnSave = New-ActionButton 'Salvar relatório'
 $monitor = New-Object System.Windows.Forms.CheckBox
 $monitor.Text = 'Acompanhar link (8 s)'; $monitor.AutoSize = $true; $monitor.Margin = New-Object System.Windows.Forms.Padding(8, 6, 0, 0)
-$script:ActionControls = @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnCopy, $btnSave, $combo)
-foreach ($c in @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnCopy, $btnSave, $monitor)) { $actions.Controls.Add($c) }
+$script:ActionControls = @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnWifi, $btnSwitch, $btnCopy, $btnSave, $combo)
+foreach ($c in @($btnRefresh, $btnFull, $btnIPv4, $btnDns, $btnIPv6, $btnMtu, $btnTrace, $btnWifi, $btnSwitch, $btnCopy, $btnSave, $monitor)) { $actions.Controls.Add($c) }
 $layout.Controls.Add($actions)
 
 function New-FieldLabel([string]$Text) {
@@ -884,6 +1284,8 @@ function Add-ResultLine([string]$Line) {
     [System.Windows.Forms.Application]::DoEvents()
 }
 $script:Writer = { param($line) Add-ResultLine $line }
+$script:Pump = { [System.Windows.Forms.Application]::DoEvents() }
+$script:Progress = { param($text) $statusLabel.Text = $text; [System.Windows.Forms.Application]::DoEvents() }
 
 function Set-Busy([bool]$Value, [string]$Text) {
     $script:Busy = $Value
@@ -958,6 +1360,13 @@ $btnFull.Add_Click({
                 catch { Add-ResultLine ("$($step.Name): interrompido — " + $_.Exception.Message) }
             }
         }
+    })
+$btnWifi.Add_Click({ Invoke-AdapterTest { param($a) Invoke-WifiReport $script:Writer } })
+$btnSwitch.Add_Click({
+        $question = "A identificação do switch captura por cerca de 65 segundos os anúncios LLDP/CDP recebidos pela Ethernet, usando o pktmon do Windows.`r`n`r`n" +
+            "Requer o PowerShell aberto como administrador. Cria dois arquivos temporários na pasta TEMP, apagados ao final. Não altera configurações de rede.`r`n`r`nContinuar?"
+        $answer = [System.Windows.Forms.MessageBox]::Show($form, $question, 'Identificar switch', 'YesNo', 'Question')
+        if ($answer -eq [System.Windows.Forms.DialogResult]::Yes) { Invoke-AdapterTest { param($a) Invoke-SwitchDiscovery $a $script:Writer } }
     })
 $btnCopy.Add_Click({
         try { [System.Windows.Forms.Clipboard]::SetText($reportBox.Text); $statusLabel.Text = 'Relatório copiado para a área de transferência.' }

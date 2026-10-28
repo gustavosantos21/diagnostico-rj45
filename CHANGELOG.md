@@ -1,5 +1,12 @@
 # Histórico de versões
 
+## 1.3.0 — em validação (não publicada)
+
+- **Wi-Fi** (botão próprio, seção separada da Ethernet): interface sem fio, SSID, access point conectado (BSSID) com prefixo OUI, canal, faixa, sinal e lista de access points próximos. Usa `netsh wlan`; não exige administrador. No Windows 11 pode exigir os serviços de localização ligados.
+- **Switch (LLDP/CDP)**, experimental: captura de cerca de 65 s com o `pktmon` do Windows, restrita à Ethernet quando o componente é identificado, e decodificação de nome do switch, porta, descrição, VLAN nativa, VLAN de voz (LLDP-MED/CDP), IP de gerência, plataforma e anúncio de PoE. **Exige PowerShell como administrador**, pede confirmação e cria dois arquivos temporários na pasta TEMP, apagados ao final. Depende de o switch enviar os anúncios.
+- Correção: mensagens dos eventos do driver mostravam apenas o nome do adaptador (driver Intel); agora mostram o texto do evento.
+- Correção: espaço vazio abaixo dos botões.
+
 ## 1.2.0 — em validação (não publicada)
 
 - Nova distribuição em script único `DiagnosticoRJ45.ps1` (Windows PowerShell 5.1), para computadores em que a política de reputação de executáveis do Defender bloqueia EXE sem histórico. Não compila código, não grava arquivos e não pede elevação. O EXE 1.1.0 continua no repositório.
